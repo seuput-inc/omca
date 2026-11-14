@@ -225,10 +225,20 @@ impl CraftApp {
         self.remember_project(&root);
         self.refresh_side_panel();
         self.state.screen = Screen::Project;
-        // A Send pressed before its picture checks finished, on a project they left: send now.
-        if !self.pending_attach_checks.contains_key(&root) && self.send_after_checks.remove(&root) {
-            self.send_message();
+        self.send_deferred_when_ready();
+    }
+
+    pub(crate) fn send_deferred_when_ready(&mut self) {
+        let Some(ws) = self.workspace.as_ref() else { return };
+        if self.state.screen != Screen::Project
+            || !self.send_after_checks.contains(&ws.root)
+            || self.pending_attach_checks.contains_key(&ws.root)
+            || !crate::provider_connect::selection_ready(self)
+        {
+            return;
         }
+        self.send_after_checks.remove(&ws.root);
+        self.send_message();
     }
 
     /// Ask for a change (or continue after a pause or error).
@@ -501,12 +511,8 @@ impl CraftApp {
             }
             if refused {
                 self.send_after_checks.remove(root);
-            } else if !self.pending_attach_checks.contains_key(root)
-                && self.send_after_checks.contains(root)
-                && self.workspace.as_ref().is_some_and(|w| &w.root == root)
-            {
-                self.send_after_checks.remove(root);
-                self.send_message();
+            } else {
+                self.send_deferred_when_ready();
             }
         }
         if !matches!(target, PictureTarget::Make) {
@@ -2313,6 +2319,7 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let ws = Workspace::create(d.path(), "Notes", "A notes app", TargetRef::None).unwrap();
         let mut app = crate::demo::app(crate::demo::engine(craft_anything_engine::Mode::Beginner, true));
+        select_managed_model(&mut app);
         app.open_workspace(ws);
         app.state.screen = Screen::Project;
         let shot = d.path().join("shot.png");
@@ -2344,6 +2351,7 @@ mod tests {
         let b = Workspace::create(&d.path().join("b"), "Beta", "A notes app", TargetRef::None).unwrap();
         let ra = a.root.clone();
         let mut app = crate::demo::app(crate::demo::engine(craft_anything_engine::Mode::Beginner, true));
+        select_managed_model(&mut app);
         app.open_workspace(a.clone());
         app.state.screen = Screen::Project;
         app.pending_attach_checks.insert(ra.clone(), 1);
@@ -2411,7 +2419,10 @@ mod tests {
 
     #[test]
     fn a_deferred_send_survives_reopening_during_a_model_change() {
-        use craft_anything_ai::{BackendEntry, rebuild::{RunSet, StandIns}};
+        use craft_anything_ai::{
+            BackendEntry,
+            rebuild::{RunSet, StandIns},
+        };
         let dir = tempfile::tempdir().unwrap();
         let a = Workspace::create(&dir.path().join("a"), "Alpha", "A notes app", TargetRef::None).unwrap();
         let b = Workspace::create(&dir.path().join("b"), "Beta", "A notes app", TargetRef::None).unwrap();

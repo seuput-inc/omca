@@ -1884,6 +1884,7 @@ impl CraftApp {
             guard("job result", || self.handle_done(f));
             guard("pasted message", || self.paste_done(job, ok));
         }
+        self.send_deferred_when_ready();
     }
 }
 
