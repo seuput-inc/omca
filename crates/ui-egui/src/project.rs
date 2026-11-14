@@ -2376,6 +2376,39 @@ mod tests {
         );
     }
 
+    #[test]
+    fn a_finished_attachment_check_in_another_project_unlocks_model_choice() {
+        use egui_kittest::kittest::Queryable;
+        let dir = tempfile::tempdir().unwrap();
+        let a = Workspace::create(&dir.path().join("a"), "Alpha", "A notes app", TargetRef::None).unwrap();
+        let b = Workspace::create(&dir.path().join("b"), "Beta", "A notes app", TargetRef::None).unwrap();
+        let root = a.root.clone();
+        let mut app = crate::demo::app(crate::demo::engine(craft_anything_engine::Mode::Beginner, true));
+        select_managed_model(&mut app);
+        app.open_workspace(a);
+        app.pending_attach_checks.insert(root.clone(), 1);
+        app.state.project_input = "For A".into();
+        app.send_message();
+        app.open_workspace(b);
+        app.state.project_input = "For B".into();
+        let mut harness = egui_kittest::Harness::builder().with_size(egui::vec2(1280.0, 820.0)).build_eframe(move |cc| {
+            CraftApp::setup_context(&cc.egui_ctx);
+            app
+        });
+        harness.run_steps(3);
+        harness.get_by_label_contains("Change model").click();
+        harness.run_steps(2);
+        assert!(harness.query_by_label("Search models").is_none(), "the active attachment check keeps its model");
+        harness.state_mut().pictures_checked(Vec::new(), None, PictureTarget::Attach(Some(root.clone())));
+        harness.run_steps(2);
+        harness.get_by_label_contains("Change model").click();
+        harness.run_steps(2);
+        assert!(harness.query_by_label("Search models").is_some(), "finished background checks must not leave model choice locked");
+        assert_eq!(harness.state().state.project_input, "For B");
+        assert!(harness.state().send_after_checks.contains(&root), "the deferred request stays with A");
+        assert_eq!(harness.state().state.unsent.get(&root).map(|draft| draft.0.as_str()), Some("For A"));
+    }
+
     /// A refused picture clears Send's wait and leaves the message in the box.
     #[test]
     fn a_refused_picture_clears_the_waiting_send() {
