@@ -225,10 +225,20 @@ impl CraftApp {
         self.remember_project(&root);
         self.refresh_side_panel();
         self.state.screen = Screen::Project;
-        // A Send pressed before its picture checks finished, on a project they left: send now.
-        if !self.pending_attach_checks.contains_key(&root) && self.send_after_checks.remove(&root) {
-            self.send_message();
+        self.send_deferred_when_ready();
+    }
+
+    pub(crate) fn send_deferred_when_ready(&mut self) {
+        let Some(ws) = self.workspace.as_ref() else { return };
+        if self.state.screen != Screen::Project
+            || !self.send_after_checks.contains(&ws.root)
+            || self.pending_attach_checks.contains_key(&ws.root)
+            || !crate::provider_connect::selection_ready(self)
+        {
+            return;
         }
+        self.send_after_checks.remove(&ws.root);
+        self.send_message();
     }
 
     /// Ask for a change (or continue after a pause or error).
@@ -501,12 +511,8 @@ impl CraftApp {
             }
             if refused {
                 self.send_after_checks.remove(root);
-            } else if !self.pending_attach_checks.contains_key(root)
-                && self.send_after_checks.contains(root)
-                && self.workspace.as_ref().is_some_and(|w| &w.root == root)
-            {
-                self.send_after_checks.remove(root);
-                self.send_message();
+            } else {
+                self.send_deferred_when_ready();
             }
         }
         if !matches!(target, PictureTarget::Make) {
@@ -2313,6 +2319,7 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let ws = Workspace::create(d.path(), "Notes", "A notes app", TargetRef::None).unwrap();
         let mut app = crate::demo::app(crate::demo::engine(craft_anything_engine::Mode::Beginner, true));
+        select_managed_model(&mut app);
         app.open_workspace(ws);
         app.state.screen = Screen::Project;
         let shot = d.path().join("shot.png");
@@ -2344,6 +2351,7 @@ mod tests {
         let b = Workspace::create(&d.path().join("b"), "Beta", "A notes app", TargetRef::None).unwrap();
         let ra = a.root.clone();
         let mut app = crate::demo::app(crate::demo::engine(craft_anything_engine::Mode::Beginner, true));
+        select_managed_model(&mut app);
         app.open_workspace(a.clone());
         app.state.screen = Screen::Project;
         app.pending_attach_checks.insert(ra.clone(), 1);
@@ -2374,6 +2382,83 @@ mod tests {
             "{:?}",
             app.state.feed
         );
+    }
+
+    #[test]
+    fn a_finished_attachment_check_in_another_project_unlocks_model_choice() {
+        use egui_kittest::kittest::Queryable;
+        let dir = tempfile::tempdir().unwrap();
+        let a = Workspace::create(&dir.path().join("a"), "Alpha", "A notes app", TargetRef::None).unwrap();
+        let b = Workspace::create(&dir.path().join("b"), "Beta", "A notes app", TargetRef::None).unwrap();
+        let root = a.root.clone();
+        let mut app = crate::demo::app(crate::demo::engine(craft_anything_engine::Mode::Beginner, true));
+        select_managed_model(&mut app);
+        app.open_workspace(a);
+        app.pending_attach_checks.insert(root.clone(), 1);
+        app.state.project_input = "For A".into();
+        app.send_message();
+        app.open_workspace(b);
+        app.state.project_input = "For B".into();
+        let mut harness = egui_kittest::Harness::builder().with_size(egui::vec2(1280.0, 820.0)).build_eframe(move |cc| {
+            CraftApp::setup_context(&cc.egui_ctx);
+            app
+        });
+        harness.run_steps(3);
+        harness.get_by_label_contains("Change model").click();
+        harness.run_steps(2);
+        assert!(harness.query_by_label("Search models").is_none(), "the active attachment check keeps its model");
+        harness.state_mut().pictures_checked(Vec::new(), None, PictureTarget::Attach(Some(root.clone())));
+        harness.run_steps(2);
+        harness.get_by_label_contains("Change model").click();
+        harness.run_steps(2);
+        assert!(harness.query_by_label("Search models").is_some(), "finished background checks must not leave model choice locked");
+        assert_eq!(harness.state().state.project_input, "For B");
+        assert!(harness.state().send_after_checks.contains(&root), "the deferred request stays with A");
+        assert_eq!(harness.state().state.unsent.get(&root).map(|draft| draft.0.as_str()), Some("For A"));
+    }
+
+    #[test]
+    fn a_deferred_send_survives_reopening_during_a_model_change() {
+        use craft_anything_ai::{
+            BackendEntry,
+            rebuild::{RunSet, StandIns},
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let a = Workspace::create(&dir.path().join("a"), "Alpha", "A notes app", TargetRef::None).unwrap();
+        let b = Workspace::create(&dir.path().join("b"), "Beta", "A notes app", TargetRef::None).unwrap();
+        let root = a.root.clone();
+        let mut app = crate::demo::app(crate::demo::engine(craft_anything_engine::Mode::Beginner, true));
+        select_managed_model(&mut app);
+        let name = app.state.backend.clone().unwrap();
+        let config = app.backends.iter().find(|backend| backend.name == name).unwrap().clone();
+        app.hub.add_backend_with(BackendEntry { config, options: app.backend_options[&name].clone() }, None).unwrap();
+        let runs = StandIns::new();
+        app.runs = RunSet::new(1).with_starter(runs.starter());
+        app.open_workspace(a.clone());
+        app.pending_attach_checks.insert(root.clone(), 1);
+        app.state.project_input = "Keep A's request".into();
+        app.send_message();
+        app.open_workspace(b);
+        app.state.project_input = "Keep B's draft".into();
+        app.pictures_checked(Vec::new(), None, PictureTarget::Attach(Some(root.clone())));
+        crate::provider_connect::set_pending_for_test(&mut app, 41);
+        app.open_workspace(a);
+        assert_eq!(app.state.project_input, "Keep A's request", "model changes must not consume deferred input");
+        assert!(app.send_after_checks.contains(&root));
+        assert!(runs.started().is_empty());
+        assert!(crate::provider_connect::completed(&mut app, 41, &Ok(name)));
+        let backends = std::mem::take(&mut app.backends);
+        app.take_finished_jobs();
+        assert_eq!(app.state.project_input, "Keep A's request", "wait for model metadata before sending");
+        assert!(app.send_after_checks.contains(&root));
+        app.backends = backends;
+        app.take_finished_jobs();
+        assert!(app.state.project_input.is_empty());
+        assert!(!app.send_after_checks.contains(&root));
+        assert_eq!(runs.started().as_slice(), std::slice::from_ref(&root));
+        app.take_finished_jobs();
+        assert_eq!(runs.started().as_slice(), std::slice::from_ref(&root), "the request starts only once");
+        assert!(runs.finish(&root));
     }
 
     /// A refused picture clears Send's wait and leaves the message in the box.
