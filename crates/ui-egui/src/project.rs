@@ -2409,6 +2409,47 @@ mod tests {
         assert_eq!(harness.state().state.unsent.get(&root).map(|draft| draft.0.as_str()), Some("For A"));
     }
 
+    #[test]
+    fn a_deferred_send_survives_reopening_during_a_model_change() {
+        use craft_anything_ai::{BackendEntry, rebuild::{RunSet, StandIns}};
+        let dir = tempfile::tempdir().unwrap();
+        let a = Workspace::create(&dir.path().join("a"), "Alpha", "A notes app", TargetRef::None).unwrap();
+        let b = Workspace::create(&dir.path().join("b"), "Beta", "A notes app", TargetRef::None).unwrap();
+        let root = a.root.clone();
+        let mut app = crate::demo::app(crate::demo::engine(craft_anything_engine::Mode::Beginner, true));
+        select_managed_model(&mut app);
+        let name = app.state.backend.clone().unwrap();
+        let config = app.backends.iter().find(|backend| backend.name == name).unwrap().clone();
+        app.hub.add_backend_with(BackendEntry { config, options: app.backend_options[&name].clone() }, None).unwrap();
+        let runs = StandIns::new();
+        app.runs = RunSet::new(1).with_starter(runs.starter());
+        app.open_workspace(a.clone());
+        app.pending_attach_checks.insert(root.clone(), 1);
+        app.state.project_input = "Keep A's request".into();
+        app.send_message();
+        app.open_workspace(b);
+        app.state.project_input = "Keep B's draft".into();
+        app.pictures_checked(Vec::new(), None, PictureTarget::Attach(Some(root.clone())));
+        crate::provider_connect::set_pending_for_test(&mut app, 41);
+        app.open_workspace(a);
+        assert_eq!(app.state.project_input, "Keep A's request", "model changes must not consume deferred input");
+        assert!(app.send_after_checks.contains(&root));
+        assert!(runs.started().is_empty());
+        assert!(crate::provider_connect::completed(&mut app, 41, &Ok(name)));
+        let backends = std::mem::take(&mut app.backends);
+        app.take_finished_jobs();
+        assert_eq!(app.state.project_input, "Keep A's request", "wait for model metadata before sending");
+        assert!(app.send_after_checks.contains(&root));
+        app.backends = backends;
+        app.take_finished_jobs();
+        assert!(app.state.project_input.is_empty());
+        assert!(!app.send_after_checks.contains(&root));
+        assert_eq!(runs.started().as_slice(), std::slice::from_ref(&root));
+        app.take_finished_jobs();
+        assert_eq!(runs.started().as_slice(), std::slice::from_ref(&root), "the request starts only once");
+        assert!(runs.finish(&root));
+    }
+
     /// A refused picture clears Send's wait and leaves the message in the box.
     #[test]
     fn a_refused_picture_clears_the_waiting_send() {
