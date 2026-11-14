@@ -1270,7 +1270,7 @@ impl CraftApp {
         self.conversation.as_ref().is_some_and(|c| c.is_busy())
             || self.jobs.busy()
             || self.runs.any_busy()
-            || !self.send_after_checks.is_empty()
+            || self.send_after_checks.iter().any(|root| self.pending_attach_checks.contains_key(root))
             || self.pending_paste.as_ref().is_some_and(|p| p.send)
             || self.start_after_pictures.is_some()
     }
@@ -2043,6 +2043,7 @@ mod managed_commit_tests {
         let selected = app.state.backend.clone();
         let jobs = app.jobs.list.len();
         app.send_after_checks.insert(std::path::PathBuf::from("pending-project"));
+        app.pending_attach_checks.insert(std::path::PathBuf::from("pending-project"), 1);
         provider_connect::commit(&mut app, "other".into(), "different-model".into());
         assert_eq!(app.state.backend, selected);
         assert_eq!(app.jobs.list.len(), jobs);
