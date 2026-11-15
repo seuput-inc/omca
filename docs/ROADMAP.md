@@ -106,14 +106,18 @@ Directly requested by the fork's maintainer on 2026-11-15.
 - [x] Publish 0.4.5 with signed update assets, verify public downloads, and update the installed Mac app.
 
 ### R5.9 Native GPT images and model-only chat selection
-Owner: maintainers · Status: in progress
+Owner: maintainers · Status: released in 0.4.6
 
 - [x] Remove provider/account labels from the chat model selector and filter unavailable connections.
 - [x] Add app-owned OpenAI Images and Codex image-tool routes without exporting credentials.
 - [x] Preserve project permission, explicit unknown-cost approval, cancellation, and original image formats.
 - [x] Verify native image routing, PNG conversion, optional fal.ai, and rendered model selection.
 - [x] Unify navigation, improve readable typography and density, and fold optional instructions into accessible help.
-- [ ] Publish 0.4.6 and verify the installed update.
+- [x] Publish 0.4.6 and verify public update signatures and payload hashes.
+
+Windows installed MSI/portable and signed helper restart checks passed in run 43721981582.
+The native macOS parent/head comparison passed with notes. This Mac's installed 0.4.5-to-0.4.6
+GUI update was not observed: the headless adapter's update-menu action showed no transition.
 
 
 ---

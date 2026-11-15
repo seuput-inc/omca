@@ -34,7 +34,7 @@ Help keyboard/pointer interactions, 14 focused UI checks, and two project smoke 
 Korean 1440 × 900 and 760 × 900 renders were inspected: the full new-project form fits, and
 approval controls remain visible at the narrow width.
 Layers, locks, tool metadata, schemas, formatting, translation coverage, and secrets passed.
-Final macOS packaging and Windows-native release verification remain pending.
+Final macOS packaging and Windows-native release verification passed on bb698af77656.
 The full pre-push gate exposed stale language/session test assumptions and a real removed-backend
 selection bug. A rejected selection now leaves disk and memory unchanged. All 17 affected AI
 regressions passed after correction, including run-owned asset generation and retry history.
@@ -64,12 +64,33 @@ a regression fixture using a verbatim path with `..`, which Windows refuses to o
 The fixture now uses the ordinary temporary-directory path. Run 43714705864 reached its next
 assertion, which compared ordinary and verbatim spellings lexically. That assertion now reads
 the actual file from the workspace path; file-location and approval behavior remain checked.
-A fresh exact-source Windows run is required before publication.
+The final exact-source Windows verification is recorded below.
 Run 43716600311 passed those security checks, installed MSI/portable payloads, native runtime,
 image boundaries, updater, titlebar, and engine checks. The expanded UI smoke gate found two
 existing-project fixtures comparing canonical workspace paths with uncanonicalized temporary
 paths. Their expected identities now use the filesystem's canonical path while folder picks
-still supply the original path. Native UI verification must pass before release.
+still supply the original path. Final native UI verification passed with the limits below.
+
+[OMCA 0.4.6](https://github.com/seuput-inc/omca/releases/tag/v0.4.6) is published as latest
+with 12 assets from bb698af77656. [PR #5](https://github.com/seuput-inc/omca/pull/5) was
+squash-merged; its main tree matched the verified source before publication.
+[Windows run 43721981582](https://github.com/seuput-inc/omca/actions/runs/43721981582)
+passed every gate: installed MSI/portable payloads, signed helper replacement and same-install
+restart, image boundaries, provider runtime, security, updater, titlebar, engines, all 95
+Windows UI smoke scenarios, exit recovery, and headless parity. An independent read-only
+verifier checked its exact checkout, six downloaded artifacts, pinned Ed25519 signatures,
+manifest identities, sizes, and SHA-256. Public release asset digests, all three update
+signatures, and the downloaded macOS update payload hash were verified after publication.
+
+An independent native macOS parent/head comparison observed unified navigation and successful
+Inspect navigation, removed mode-menu entries, and the empty-account Start guard. Model-picker
+and Settings semantic actions did not produce an observed transition; their live interaction
+is not claimed verified. Automated model, help, and settings checks passed separately.
+The installed 0.4.5 app's native update-menu action likewise produced no observed update
+dialog through the headless adapter; this machine's 0.4.5-to-0.4.6 GUI update is not claimed.
+No physical-input or focus workaround was used. macOS is ad-hoc signed/not notarized and
+Windows is Authenticode unsigned. No personal login, paid image generation, full Unity
+installation, or licence acceptance was performed.
 
 Upstream security backports selected for this release:
 [`98b22ac`](https://github.com/storytold/craft-anything/commit/98b22ac3e2ab2b14543611c57820b1d345bc7877)
@@ -82,7 +103,7 @@ secure settings directories before private atomic writes. OMCA keeps its transac
 explicit project-approval semantics. Original MIT and Apache-2.0 license notices are retained.
 Backport verification passed: 58 engine approval, journal, and settings regressions; two MCP
 approval-response tests; strict all-target Clippy and formatting. Independent source review
-found no actionable P1 or P2 issue in the backports. Windows-native verification remains pending.
+found no actionable P1 or P2 issue in the backports. Final Windows security regressions passed.
 
 
 ### OMCA 0.4.5 release work
