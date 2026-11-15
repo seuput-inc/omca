@@ -656,7 +656,7 @@ mod tests {
         let installed = super::super::managed_rust(d.path());
         assert_eq!(installed.iter().map(|i| i.version.as_str()).collect::<Vec<_>>(), ["1.100.0", "1.99.0"]);
         let env = super::super::rust_environment(d.path()).unwrap();
-        assert!(env.iter().any(|(k, v)| k == "CARGO_HOME" && v == d.path().join("rust/1.100.0/cargo").as_os_str()));
+        assert!(env.iter().any(|(k, v)| k == "CARGO_HOME" && Path::new(v) == d.path().join("rust/1.100.0/cargo")));
         let path = env.iter().find(|(k, _)| k == "PATH").map(|(_, v)| v).unwrap();
         assert_eq!(std::env::split_paths(path).next().unwrap(), d.path().join("rust/1.100.0/cargo/bin"));
     }

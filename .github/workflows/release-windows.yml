@@ -31,9 +31,22 @@ jobs:
       - name: Rust
         run: rustup update stable --no-self-update && rustup default stable
       - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: "1.4.4"
+      - name: Official Unity CLI private-profile boundary
+        shell: pwsh
+        run: |
+          $store = Join-Path $env:RUNNER_TEMP ("omca-unity-private-" + [guid]::NewGuid().ToString())
+          cargo run --locked -p craft-anything-engines --example unity_private_env -- "$store"
+          if ($LASTEXITCODE -ne 0) { throw 'Official Unity CLI cannot isolate its Windows account profile' }
+      - name: Native game-engine backend regressions
+        shell: pwsh
+        run: |
+          cargo test --locked -p craft-anything-engines --lib game::
+          if ($LASTEXITCODE -ne 0) { throw 'Native game-engine regression failed' }
       - name: Provider account runtime
         shell: bash
         run: |
@@ -98,18 +111,10 @@ jobs:
       - name: Native game-engine regressions
         shell: pwsh
         run: |
-          cargo test -p craft-anything-engines --lib game::
-          if ($LASTEXITCODE -ne 0) { throw 'Native game-engine regression failed' }
           cargo test -p craft-anything-engine --lib setup_tools::tests
           if ($LASTEXITCODE -ne 0) { throw 'Engine setup authorization regression failed' }
           cargo test -p craft-anything-ui-egui --lib engine_ui::tests
           if ($LASTEXITCODE -ne 0) { throw 'Engine setup UI regression failed' }
-      - name: Official Unity CLI private-profile boundary
-        shell: pwsh
-        run: |
-          $store = Join-Path $env:RUNNER_TEMP ("omca-unity-private-" + [guid]::NewGuid().ToString())
-          cargo run --locked -p craft-anything-engines --example unity_private_env -- "$store"
-          if ($LASTEXITCODE -ne 0) { throw 'Official Unity CLI cannot isolate its Windows account profile' }
       - name: Real portable updater helper smoke
         shell: pwsh
         env:
