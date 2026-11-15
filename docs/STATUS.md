@@ -53,6 +53,10 @@ The headless capability table includes Unity setup and latest-release queries. I
 registration and CLI checks passed. A private-method-name allowlist was removed rather than
 pinning callback names; public capability checks remain. Windows release checks also cover
 exit recovery and keyboard-accessible help.
+All 96 unified-workspace smoke scenarios and the complete isolated provider-connection flow
+passed. Completion summaries remain visible, and cancelling optional fal.ai setup preserves
+the image-generation choice. Inline text actions expose button semantics and keyboard focus;
+their keyboard regression, strict UI Clippy, Korean translation coverage, and formatting passed.
 
 Upstream security backports selected for this release:
 [`98b22ac`](https://github.com/storytold/craft-anything/commit/98b22ac3e2ab2b14543611c57820b1d345bc7877)

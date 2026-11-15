@@ -1504,7 +1504,7 @@ fn draw_items(
         ui.push_id(i, |ui| match item {
             FeedItem::User(text) => chat::user_bubble(ui, text.text(), false),
             FeedItem::Step { step, text } => {
-                let shown = crate::i18n::tr_known(text).unwrap_or_else(|| tr(step.label()));
+                let shown = crate::i18n::tr_known(text).unwrap_or_else(|| if matches!(step, Step::Done) { text.clone() } else { tr(step.label()) });
                 ui.scope(|ui| chat::activity_row(ui, RichText::new(shown).color(t.text_dim).size(theme::SMALL))).response.on_hover_text(text);
             }
             FeedItem::Paused => chat::activity_row(ui, RichText::new(tr("Paused.")).color(t.text_dim).size(theme::SMALL)),

@@ -464,6 +464,8 @@ pub fn link(ui: &mut Ui, label: &str) -> Response {
     let t = Tokens::get(ui.ctx());
     let r = ui.add(egui::Label::new(RichText::new(tr(label)).color(t.accent_ink)).sense(Sense::click()));
     let r = r.on_hover_cursor(egui::CursorIcon::PointingHand);
+    r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), tr(label)));
+    focus_ring(ui, &r, r.rect);
     if r.hovered() {
         let y = r.rect.bottom();
         ui.painter().hline(r.rect.x_range(), y, Stroke::new(1.0, t.accent_ink));
@@ -874,6 +876,25 @@ pub fn open_log_button(ui: &mut Ui, path: &std::path::Path) -> bool {
 mod tests {
     use super::*;
     use std::time::Duration;
+
+    #[test]
+    fn inline_actions_are_announced_as_buttons_and_work_with_the_keyboard() {
+        use egui_kittest::kittest::Queryable as _;
+        let mut h = egui_kittest::Harness::new_ui_state(
+            |ui, calls: &mut usize| {
+                if link(ui, "Retry").clicked() {
+                    *calls += 1;
+                }
+            },
+            0,
+        );
+        h.run_steps(3);
+        h.get_by_role_and_label(egui::accesskit::Role::Button, &tr("Retry")).focus();
+        h.run_steps(2);
+        h.key_press(egui::Key::Space);
+        h.run_steps(3);
+        assert_eq!(*h.state(), 1);
+    }
 
     #[test]
     fn help_is_hidden_until_opened_and_supports_keyboard_and_pointer() {

@@ -53,7 +53,7 @@ fn first_run_walks_through_four_screens() {
     if !craft_anything_ui_egui::titlebar::NATIVE_FRAME {
         h.get_by_label("Close");
     }
-    h.get_by_label("I'm new to this").click();
+    h.get_by_label("Continue").click();
     h.run_steps(3);
     assert_eq!(h.state().state.first_run, FirstRunStep::Brain);
     assert_eq!(h.state().settings.mode, Mode::Beginner);
@@ -130,8 +130,9 @@ fn first_run_continue_is_reachable_at_the_smallest_window() {
 fn title_bar_keeps_essential_controls() {
     let mut h = harness(|| demo::app(demo::engine(Mode::Beginner, true)));
     h.run_steps(3);
-    h.get_by_label("Settings");
-    h.get_by_label("Clean room");
+    let settings = h.get_all_by_label("Settings").min_by(|a, b| a.rect().top().total_cmp(&b.rect().top())).unwrap();
+    assert!(settings.rect().top() < h.get_by_label("New project").rect().top(), "Settings is in the title bar");
+    h.get_by_role_and_label(egui::accesskit::Role::CheckBox, "Clean room");
 }
 
 #[test]
@@ -165,8 +166,8 @@ fn a_game_is_built_with_its_engine_and_a_missing_engine_is_got_first() {
     h.run_steps(4);
     assert_eq!(h.state().state.modal, Some(Modal::Engine(Builder::Unity)));
     assert!(h.state().engine_flow.start_after);
-    // The first step: Unity's own installer where we can check its signature, else its website.
-    h.get_by_label(if cfg!(windows) { "Download Unity Hub" } else { "Get Unity Hub" });
+    // Unity must be installed and licensed before the waiting build can start.
+    h.get_by_label("Check Unity setup");
     h.get_by_label("Build with Godot instead");
     assert!(h.state().projects.iter().all(|p| p.manifest.request != "Recreate this game"), "nothing started yet");
 }
@@ -177,10 +178,9 @@ fn fal_key(stored: bool) -> std::collections::BTreeMap<String, bool> {
 }
 
 #[test]
-fn turning_on_generated_assets_without_a_fal_key_asks_for_one() {
+fn generated_assets_without_a_fal_key_remain_optional_and_explain_costs() {
     use craft_anything_engine::workspace::TargetRef;
     use craft_anything_engines::game::{Builder, Installed, Inventory};
-    use craft_anything_ui_egui::state::Modal;
     let d = tempfile::tempdir().unwrap();
     let game = d.path().join("game");
     std::fs::create_dir_all(&game).unwrap();
@@ -203,24 +203,46 @@ fn turning_on_generated_assets_without_a_fal_key_asks_for_one() {
     h.get_by_label("Generate custom pictures and models").click();
     h.run_steps(3);
     assert!(h.state().state.make.generate_assets);
-    assert_eq!(h.state().state.modal, Some(Modal::Assets), "no key yet, so it's asked for");
+    assert!(h.state().state.modal.is_none(), "a fal.ai key is not mandatory");
+    h.get_by_label_contains("No generation is attempted without a supported connection.");
+    h.get_by_label("Optional fal.ai setup").scroll_to_me();
+    h.run_steps(3);
+    assert!(h.ctx.content_rect().contains(h.get_by_label("Optional fal.ai setup").rect().center()), "optional setup is in the window");
+    h.get_by_label("Optional fal.ai setup").focus();
+    h.run_steps(2);
+    assert!(h.get_by_label("Optional fal.ai setup").is_focused());
+    h.key_press(egui::Key::Space);
+    h.run_steps(3);
+    assert_eq!(h.state().state.modal, Some(craft_anything_ui_egui::state::Modal::Assets));
     h.get_by_label("Your fal.ai key");
     h.get_by_label("fal.ai key");
     h.get_by_label("Not now").click();
     h.run_steps(3);
-    assert_eq!(h.state().state.modal, None);
-    assert!(!h.state().state.make.generate_assets, "without a key it goes back off");
-    // The switch says what it costs and what happens without it, in either mode.
+    assert!(h.state().state.modal.is_none());
+    assert!(h.state().state.make.generate_assets, "declining optional setup keeps the person's choice");
+    h.get_by_label("Optional fal.ai setup").scroll_to_me();
+    h.run_steps(3);
+    assert!(h.ctx.content_rect().contains(h.get_by_label("Optional fal.ai setup").rect().center()), "optional setup is in the window");
+    h.get_by_label("Optional fal.ai setup").focus();
+    h.run_steps(2);
+    assert!(h.get_by_label("Optional fal.ai setup").is_focused());
+    h.key_press(egui::Key::Space);
+    h.run_steps(3);
+    assert_eq!(h.state().state.modal, Some(craft_anything_ui_egui::state::Modal::Assets));
+    h.key_press(egui::Key::Escape);
+    h.run_steps(3);
+    assert!(h.state().state.modal.is_none());
+    assert!(h.state().state.make.generate_assets, "closing optional setup keeps the person's choice");
     for deep in [true, false] {
         h.state_mut().settings.deep_mode = deep;
         h.run_steps(2);
-        h.get_by_label_contains("Off, the game is built without them.");
+        h.get_by_label_contains("No generation is attempted without a supported connection.");
         assert!(h.query_by_label_contains("original game").is_none());
     }
-    // With a key, turning it on asks nothing.
     h.state_mut().asset_keys = Some(fal_key(true));
-    h.get_by_label("Generate custom pictures and models").click();
     h.run_steps(3);
+    h.get_by_label_contains("Optional fal.ai generation:");
+    h.get_by_label_contains("Off, no assets are generated.");
     assert!(h.state().state.make.generate_assets && h.state().state.modal.is_none());
 }
 
@@ -239,14 +261,13 @@ fn deep_mode_without_ghidra_asks_to_get_it_before_using_it() {
         select_demo_account(&mut a);
         // An empty engine store: no Ghidra here.
         a.settings.engines.store_dir = Some(store);
+        a.settings.engines.only_configured = true;
         a.state.make.target = TargetRef::Local { path: game };
         a.state.make.game = true;
         a.state.make.request = "Recreate this game".into();
-        a.state.make.builder = Some(Builder::Unity);
-        a.game_engines = Some(Inventory {
-            engines: vec![Installed { builder: Builder::Unity, version: "6000.0.23f1".into(), program: "Unity.exe".into() }],
-            ..Default::default()
-        });
+        a.state.make.builder = Some(Builder::Godot);
+        a.game_engines =
+            Some(Inventory { engines: vec![Installed { builder: Builder::Godot, version: "4.4.1".into(), program: "godot".into() }], ..Default::default() });
         a.asset_keys = Some(fal_key(true));
         a
     });
@@ -349,13 +370,23 @@ fn a_game_project_shows_its_asset_spending_and_can_raise_the_budget() {
         a
     });
     assert!(wait(&mut h, |a| a.facts.assets.0 == 1));
+    h.get_by_label("Project details").click();
+    h.run_steps(3);
     h.get_by_label("1 · $0.51 of $5.00");
     // Generated assets are the person's choice, saved with the project through project_assets_allow.
-    h.get_by_label("Generate custom pictures and models").click();
+    h.get_by_label("Generate custom pictures and models").scroll_to_me();
+    h.run_steps(2);
+    assert!(h.ctx.content_rect().contains(h.get_by_label("Generate custom pictures and models").rect().center()), "asset permission is in the window");
+    h.get_by_label("Generate custom pictures and models").focus();
+    h.run_steps(2);
+    assert!(h.get_by_label("Generate custom pictures and models").is_focused());
+    h.key_press(egui::Key::Space);
     assert!(wait(&mut h, |a| a.workspace.as_ref().is_some_and(|w| w.manifest.generate_assets)));
     assert!(Workspace::open(&root).unwrap().manifest.generate_assets);
     assert!(h.state().state.modal.is_none(), "a key is set up");
     // Through the project_assets_budget tool, by the default budget from Settings.
+    h.get_by_label("Raise the budget by $5.00").scroll_to_me();
+    h.run_steps(2);
     h.get_by_label("Raise the budget by $5.00").click();
     assert!(wait(&mut h, |a| a.workspace.as_ref().is_some_and(|w| w.manifest.asset_budget_usd == 10.0)));
     assert_eq!(Workspace::open(&root).unwrap().manifest.asset_budget_usd, 10.0);
@@ -490,7 +521,8 @@ fn the_sidebar_lists_projects_and_moves_between_them() {
     h.run_steps(3);
     h.get_by_label("New project");
     assert!(h.query_by_label("Look inside an app").is_none(), "looking inside is on the New project screen");
-    h.get_by_label("Settings");
+    let settings = h.get_all_by_label("Settings").max_by(|a, b| a.rect().top().total_cmp(&b.rect().top())).unwrap();
+    assert!(settings.rect().top() > h.get_by_label("New project").rect().top(), "Settings is in the sidebar");
     h.get_by_label("Snake, Ready").click();
     h.run_steps(3);
     assert_eq!(h.state().state.screen, Screen::Project);
@@ -498,7 +530,7 @@ fn the_sidebar_lists_projects_and_moves_between_them() {
     h.get_by_label("New project").click();
     h.run_steps(3);
     assert_eq!(h.state().state.screen, Screen::Home);
-    h.get_by_label("Settings").click();
+    h.get_all_by_label("Settings").max_by(|a, b| a.rect().top().total_cmp(&b.rect().top())).unwrap().click();
     h.run_steps(3);
     assert!(h.state().state.settings_open);
 }
@@ -667,6 +699,8 @@ fn pictures_of_the_original_go_with_the_draft_then_into_the_project() {
     h.state_mut().workspace = Some(ws);
     h.state_mut().state.screen = Screen::Project;
     h.run_steps(3);
+    h.get_by_label("Project details").click();
+    h.run_steps(3);
     h.get_by_label("Add pictures of the original");
     h.state_mut().add_pictures(vec![pic]);
     assert!(wait(&mut h, |a| a.facts.references == 1), "copied on a worker, then counted again");
@@ -736,7 +770,11 @@ fn a_finished_build_can_be_pinned_and_opened_from_the_sidebar() {
     });
     assert!(wait(&mut h, |a| a.facts.program));
     h.run_steps(2);
+    h.get_by_label("Project details").click();
+    h.run_steps(3);
     assert!(h.query_by_label("Pinned builds").is_none(), "no Pinned section before anything is pinned");
+    h.get_by_label("Pin this build").scroll_to_me();
+    h.run_steps(2);
     h.get_by_label("Pin this build").click();
     // The dialog works out what a frozen copy takes; frozen is picked.
     assert!(wait(&mut h, |a| matches!(a.state.pin_draft.size, Some(Ok(_)))));
@@ -1031,9 +1069,15 @@ fn a_failure_with_a_log_offers_to_open_it_and_one_without_does_not() {
     });
     h.run_steps(4);
     h.get_by_label_contains("ssh printed: no");
+    h.get_by_label("Error details").click();
+    h.run_steps(2);
     assert!(h.query_by_label("Open log").is_none());
+    h.get_by_label("Error details").click();
+    h.run_steps(2);
     h.state_mut().state.chat = vec![ChatItem::Error { message: "It failed.".into(), remediation: None, log: Some("/tmp/agent.log".into()) }];
     h.run_steps(4);
+    h.get_by_label("Error details").click();
+    h.run_steps(2);
     h.get_by_label("Open log");
 }
 
@@ -1897,6 +1941,8 @@ fn a_projects_saved_time_and_ai_use_show_beside_it_and_the_session_total_in_the_
         a
     });
     h.run_steps(3);
+    h.get_by_label("Project details").click();
+    h.run_steps(3);
     h.get_by_label("Time spent");
     h.get_by_label("12m 05s");
     // A coding agent's figure is called an estimate, in the open and not only on hover.
@@ -1926,6 +1972,8 @@ fn a_big_cost_doesnt_paint_over_its_caption() {
         }
         a
     });
+    h.run_steps(3);
+    h.get_by_label("Project details").click();
     h.run_steps(3);
     let caption = h.get_by_label("AI cost (estimate)").rect();
     let value = h.get_by_label("about $13021.36").rect();
@@ -2150,6 +2198,7 @@ fn a_build_that_stopped_part_way_offers_to_continue() {
     h.run_steps(3);
     assert_eq!(Workspace::open(&paused.root).unwrap().manifest.status, Status::Ready);
     assert!(h.query_by_label("Continue").is_none(), "nothing left to carry on");
+    assert_eq!(Workspace::open(&paused.root).unwrap().manifest.note, craft_anything_engine::tools::project_tools::CALLED_DONE);
     h.get_by_label(craft_anything_engine::tools::project_tools::CALLED_DONE);
     h.state_mut().open_workspace(cut.clone());
     h.run_steps(3);
@@ -2168,6 +2217,8 @@ fn the_builders_open_questions_show_beside_the_project() {
         demo::fill_project(&mut a);
         a
     });
+    h.run_steps(3);
+    h.get_by_label("Project details").click();
     h.run_steps(3);
     h.get_by_label("Open questions");
     h.get_by_label("May the original's logo and text be reused, or must they be placeholders?");
@@ -2268,7 +2319,7 @@ fn the_front_door_works_on_a_project_the_person_already_has() {
     let mut h = harness(move || stand_in_app(dir, &r));
     h.run_steps(2);
     h.state_mut().state.make.target = TargetRef::Website { url: "https://example.com".into() };
-    h.get_by_label("Work on my project").click();
+    h.get_by_role_and_label(egui::accesskit::Role::Button, "Work on my project").click();
     h.run_steps(3);
     assert!(h.state().state.make.mine && !h.state().state.make.look);
     assert_eq!(h.state().state.make.target, TargetRef::None, "nothing to recreate");
@@ -2297,7 +2348,7 @@ fn the_front_door_works_on_a_project_the_person_already_has() {
     assert!(h.state().state.make.folder.is_none() && h.state().state.make.existing.is_none());
     craft_anything_ui_egui::folders::picked_own(h.state_mut(), mine.path().to_path_buf());
     assert!(h.state().state.make.folder.is_none(), "a dialog that ends after leaving the door is dropped");
-    h.get_by_label("Work on my project").click();
+    h.get_by_role_and_label(egui::accesskit::Role::Button, "Work on my project").click();
     h.run_steps(3);
     h.get_by_label("Choose your project's folder…");
     craft_anything_ui_egui::folders::picked_own(h.state_mut(), mine.path().to_path_buf());
@@ -2338,7 +2389,7 @@ fn work_on_my_project_builds_with_the_engine_its_folder_uses() {
         a
     });
     h.run_steps(3);
-    h.get_by_label("Work on my project").click();
+    h.get_by_role_and_label(egui::accesskit::Role::Button, "Work on my project").click();
     h.run_steps(3);
     craft_anything_ui_egui::folders::picked_own(h.state_mut(), mine.path().to_path_buf());
     h.state_mut().state.make.request = "Fix my game's jump".into();
@@ -2633,6 +2684,8 @@ fn a_paused_build_shows_where_it_stopped() {
         a
     });
     h.run_steps(3);
+    h.get_by_label("Project details").click();
+    h.run_steps(3);
     h.get_by_label("Study: Done");
     h.get_by_label("Build: Stopped here");
     assert!(h.query_by_label("Pause").is_none(), "nothing to pause");
@@ -2710,6 +2763,10 @@ fn a_project_is_renamed_duplicated_and_deleted_from_its_page() {
         a
     });
     h.run_steps(3);
+    h.get_by_label("Project details").click();
+    h.run_steps(3);
+    h.get_by_label("Rename").scroll_to_me();
+    h.run_steps(2);
     h.get_by_label("Rename").click();
     h.run_steps(2);
     assert_eq!(h.state().state.modal, Some(Modal::Rename(root.clone())));
@@ -2720,9 +2777,13 @@ fn a_project_is_renamed_duplicated_and_deleted_from_its_page() {
 
     assert!(wait(&mut h, |a| a.workspace.as_ref().is_some_and(|w| w.manifest.name == "Snake II")), "renamed through project_rename");
 
+    h.get_by_label("Duplicate").scroll_to_me();
+    h.run_steps(2);
     h.get_by_label("Duplicate").click();
     assert!(wait(&mut h, |a| a.projects.iter().any(|w| w.manifest.name == "Snake II copy")), "the copy is listed");
 
+    h.get_by_label("Delete the project").scroll_to_me();
+    h.run_steps(2);
     h.get_by_label("Delete the project").click();
     h.run_steps(2);
     h.get_by_label("Delete Snake II?");

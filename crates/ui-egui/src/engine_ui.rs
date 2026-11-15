@@ -617,7 +617,7 @@ pub fn assets_toggle(app: &mut CraftApp, ui: &mut Ui, mut on: bool) {
     });
 }
 
-/// Asks for a fal.ai key when generated assets are turned on without one.
+/// Optional fal.ai connection, independent of the project's generation choice.
 pub fn assets_modal(app: &mut CraftApp, ui: &mut Ui, close: &mut bool) {
     let t = Tokens::get(ui.ctx());
     ui.set_width(520.0);
@@ -625,7 +625,7 @@ pub fn assets_modal(app: &mut CraftApp, ui: &mut Ui, close: &mut bool) {
         widgets::icon_tile(ui, "boxes", size::TILE_LG);
         ui.vertical(|ui| {
             ui.label(theme::heading(tr("Your fal.ai key"), theme::SECTION));
-            ui.label(RichText::new(tr("Generated pictures and 3D models are made with fal.ai.")).color(t.text_dim));
+            ui.label(RichText::new(tr("fal.ai is optional for pictures and provides 3D generation.")).color(t.text_dim));
         });
     });
     ui.add_space(space::M);
@@ -653,7 +653,6 @@ pub fn assets_modal(app: &mut CraftApp, ui: &mut Ui, close: &mut bool) {
     ui.add_space(space::L);
     if widgets::secondary(ui, None, "Not now").clicked() {
         *close = true;
-        app.set_generate_assets(false);
     }
 }
 

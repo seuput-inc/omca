@@ -161,9 +161,9 @@ jobs:
       - name: Unified workspace regressions
         shell: pwsh
         run: |
-          cargo test --locked -p craft-anything-ui-egui --lib -- provider_connect::tests settings_ui::tests::picture_model widgets::tests::help_is_hidden
+          cargo test --locked -p craft-anything-ui-egui --lib -- provider_connect::tests settings_ui::tests::picture_model widgets::tests::help_is_hidden widgets::tests::inline_actions
           if ($LASTEXITCODE -ne 0) { throw 'Model selection regression failed' }
-          cargo test --locked -p craft-anything-ui-egui --test smoke -- legacy_preferences_share_navigation project_result_shows_the_check_capture_without_a_similarity_score
+          cargo test --locked -p craft-anything-ui-egui --test smoke
           if ($LASTEXITCODE -ne 0) { throw 'Unified workspace regression failed' }
           cargo test --locked -p craft-anything-ui-egui --test exit_settings --test headless_parity
           if ($LASTEXITCODE -ne 0) { throw 'Settings recovery or headless capability regression failed' }
