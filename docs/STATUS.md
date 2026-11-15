@@ -39,6 +39,9 @@ The full pre-push gate exposed stale language/session test assumptions and a rea
 selection bug. A rejected selection now leaves disk and memory unchanged. All 17 affected AI
 regressions passed after correction, including run-owned asset generation and retry history.
 The complete pre-push gate must pass before publication.
+The Ghidra alias fixture no longer assumes a dot-free system temporary directory. It tests the
+existing fallback and actual link/write/replacement behavior separately inside isolated storage.
+All four cache-path checks, engine Clippy, and formatting passed; runtime path policy is unchanged.
 
 Upstream security backports selected for this release:
 [`98b22ac`](https://github.com/storytold/craft-anything/commit/98b22ac3e2ab2b14543611c57820b1d345bc7877)

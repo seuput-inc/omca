@@ -350,7 +350,7 @@ fn has_dot_part(p: &Path) -> bool {
 /// or the temp folder, one per store. `None` when those have a dot part too.
 #[cfg(unix)]
 fn dot_free_link(store: &Path) -> Result<Option<PathBuf>, GhidraError> {
-    use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+    use std::os::unix::fs::MetadataExt as _;
     let launch = |what: &str, e: std::io::Error| GhidraError::Launch(format!("{what}: {e}"));
     let store = std::path::absolute(store).map_err(|e| launch("finding the engine store", e))?;
     make_private_dir(&store)?;
@@ -359,6 +359,13 @@ fn dot_free_link(store: &Path) -> Result<Option<PathBuf>, GhidraError> {
     if !base.is_absolute() || has_dot_part(&base) {
         return Ok(None);
     }
+    store_link(&store, &base, owner).map(Some)
+}
+
+#[cfg(unix)]
+fn store_link(store: &Path, base: &Path, owner: u32) -> Result<PathBuf, GhidraError> {
+    use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+    let launch = |what: &str, e: std::io::Error| GhidraError::Launch(format!("{what}: {e}"));
     let dir = base.join(format!("craft-anything-{owner}"));
     make_private_dir(&dir)?;
     // In a shared temp folder, a folder someone else made (or a link to one) isn't ours to use.
@@ -374,14 +381,14 @@ fn dot_free_link(store: &Path) -> Result<Option<PathBuf>, GhidraError> {
     // Two processes can make the link at once: whoever loses checks the one the other made.
     for _ in 0..2 {
         match std::fs::read_link(&link) {
-            Ok(to) if to == store => return Ok(Some(link)),
+            Ok(to) if to == store => return Ok(link),
             Ok(_) => {
                 let _ = std::fs::remove_file(&link);
             }
             Err(_) => {}
         }
-        match std::os::unix::fs::symlink(&store, &link) {
-            Ok(()) => return Ok(Some(link)),
+        match std::os::unix::fs::symlink(store, &link) {
+            Ok(()) => return Ok(link),
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
             Err(e) => return Err(launch("linking the engine store", e)),
         }
