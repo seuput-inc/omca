@@ -1,0 +1,39 @@
+name: Sign existing OMCA update artifacts
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag with an existing macOS update ZIP
+        type: string
+        required: true
+permissions:
+  contents: write
+jobs:
+  sign-macos:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.4.4"
+      - name: Download the release update ZIP
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          mkdir -p signing
+          gh release download "$TAG" --pattern "omca-${TAG#v}-macos-aarch64-update.zip" --dir signing
+          unzip -p "signing/omca-${TAG#v}-macos-aarch64-update.zip" OMCA.app/Contents/MacOS/craft-anything > signing/executable
+      - name: Sign exact manifest bytes
+        env:
+          OMCA_UPDATE_SIGNING_KEY: ${{ secrets.OMCA_UPDATE_SIGNING_KEY }}
+          TAG: ${{ inputs.tag }}
+        run: bun packaging/sign-update.ts "signing/omca-${TAG#v}-macos-aarch64-update.zip" signing/executable "${TAG#v}" mac-zip
+      - name: Attach signed manifests
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+        run: gh release upload "$TAG" signing/*.manifest.json signing/*.sig --clobber

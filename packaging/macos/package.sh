@@ -16,6 +16,10 @@ set -euo pipefail
 # shellcheck source=../env.sh
 . "$(dirname "${BASH_SOURCE[0]}")/../env.sh"
 HERE="$ROOT/packaging/macos"
+if [[ -z "${OMCA_UPDATE_SIGNING_KEY_FILE:-}" && -z "${OMCA_UPDATE_SIGNING_KEY:-}" ]]; then
+  echo "OMCA_UPDATE_SIGNING_KEY_FILE or OMCA_UPDATE_SIGNING_KEY is required for signed app updates." >&2
+  exit 1
+fi
 
 ARCH=aarch64
 SKIP_BUILD=0
@@ -210,6 +214,13 @@ if [[ "$NOTARIZE" = 1 ]]; then
   retry xcrun stapler validate "$DMG"
   spctl --assess --type open --context context:primary-signature -vvv "$DMG"
 fi
+
+# The updater verifies the exact ZIP bytes with OMCA's own release key, independently of
+# Developer ID. zip follows packaged links as regular files; update archives reject links.
+UPDATE_ZIP="$(cd "$DIST" && pwd)/omca-$VERSION-macos-$ARCH-update.zip"
+rm -f "$UPDATE_ZIP"
+(cd "$WORK" && /usr/bin/zip -q -r "$UPDATE_ZIP" OMCA.app)
+bun "$ROOT/packaging/sign-update.ts" "$UPDATE_ZIP" "$APP/Contents/MacOS/craft-anything" "$VERSION" mac-zip
 
 # ---- CLI ---------------------------------------------------------------------------------------
 if [[ "$HAS_CLI" = 1 ]]; then

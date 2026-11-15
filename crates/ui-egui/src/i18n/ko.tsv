@@ -89,7 +89,7 @@ API boundary	API 경계
 API key	API 키
 API key (stored in your system keychain)	API 키 (시스템 키체인에 저장)
 API key, if it needs one	API 키 (필요한 경우)
-About 10 GB. Free for personal use with a Unity account.	약 10 GB. Unity 계정이 있으면 개인 용도로 무료입니다.
+About 10 GB. A Unity account and an eligible licence are required.	약 10 GB. Unity 계정과 자격 요건에 맞는 라이선스가 필요합니다.
 About 60 GB, an Epic Games account, and Visual Studio's C++ tools.	약 60 GB, Epic Games 계정, Visual Studio C++ 도구가 필요합니다.
 Add	추가
 Add Visual Studio's C++ tools	Visual Studio C++ 도구 추가
@@ -1557,3 +1557,173 @@ Unavailable	사용할 수 없음
 Connecting…	연결 중…
 Settings model	설정 모델
 Retry	다시 시도
+Current model	현재 모델
+Connected accounts	연결된 계정
+Connected	연결됨
+Needs attention	확인 필요
+Available	사용 가능
+Back to accounts	계정 목록으로
+Ready to send	전송 준비 완료
+Choose an available model to send. Your draft stays in the composer.	사용 가능한 모델을 고르면 전송할 수 있습니다. 작성 중인 내용은 입력창에 유지됩니다.
+Add an account here, then choose its model above. No accounts from other apps are used.	여기에서 계정을 추가한 다음 위에서 모델을 고르세요. 다른 앱의 계정은 사용하지 않습니다.
+Loading models…	모델 불러오는 중…
+Retry model connection	모델 연결 다시 시도
+Next step	다음 단계
+Error details	오류 상세
+Copy error details	오류 상세 복사
+Account connection needs attention	계정 연결을 확인해 주세요
+Model connection did not finish	모델을 연결하지 못했습니다
+The answer could not finish	답변을 완료하지 못했습니다
+The build could not finish	빌드를 완료하지 못했습니다
+Check the connection details below, then refresh accounts or add the account again.	아래 오류 상세를 확인한 다음 계정을 새로 고치거나 다시 추가하세요.
+Check Models & accounts, then choose an available model. Your draft is kept.	모델 및 계정에서 연결 상태를 확인하고 사용 가능한 모델을 고르세요. 작성 중인 내용은 유지됩니다.
+Review the error details and fix the issue before sending another message. Your conversation is kept.	오류 상세를 확인하고 문제를 해결한 다음 새 메시지를 보내세요. 대화는 유지됩니다.
+Fix the issue shown below, then send a message to continue. Existing files and conversation are kept.	아래 오류를 해결한 다음 메시지를 보내 작업을 이어가세요. 기존 파일과 대화는 유지됩니다.
+Working on your request…	요청을 처리하는 중…
+Change projects folder…	프로젝트 저장 폴더 변경…
+A new folder is created automatically. Existing folders get a numbered suffix.	새 폴더가 자동으로 만들어집니다. 같은 이름의 폴더가 있으면 번호를 붙입니다.
+Use a short project name without path separators or reserved filename characters.	경로 구분자나 파일 이름에 사용할 수 없는 문자를 제외한 짧은 프로젝트 이름을 입력하세요.
+Running {object}	{object} 실행 중
+Reading {object}	{object} 읽는 중
+Writing {object}	{object} 작성 중
+Editing {object}	{object} 수정 중
+Looking for {object}	{object} 찾는 중
+Searching for {object}	{object} 검색 중
+Fetching {object}	{object} 가져오는 중
+Searching the web for {object}	웹에서 {object} 검색 중
+Handing off {object}	{object} 작업 전달 중
+Reading the investigation so far…	지금까지의 분석을 읽는 중…
+Stopped.	중지되었습니다.
+The answer hit the length limit and was cut off.	답변 길이 제한에 도달하여 일부가 잘렸습니다.
+Making room: summarising the earlier work…	이전 작업을 요약하여 공간을 확보하는 중…
+Preparing the shared investigation...	공유 분석을 준비하는 중...
+Reading what you added…	추가한 요청을 읽는 중…
+Getting the builder ready…	만들기를 준비하는 중…
+Building the first version…	첫 버전을 만드는 중…
+Carrying on with the build…	이어서 만드는 중…
+Improving the build…	결과를 개선하는 중…
+Checking the build…	만든 결과를 검사하는 중…
+Checking the build against the original…	만든 결과를 원본과 비교하는 중…
+Photographing the page and reading its layout…	페이지를 촬영하고 배치를 읽는 중…
+Opening its menus, pop-ups and tabs…	메뉴, 팝업과 탭을 여는 중…
+Looking inside it (nothing is run)…	실행하지 않고 내부를 살펴보는 중…
+Couldn't find the program to decompile, so Ghidra can't be used. Pick the game's or app's main folder or its program.	역컴파일할 프로그램을 찾지 못해 Ghidra를 사용할 수 없습니다. 게임이나 앱의 기본 폴더 또는 실행 파일을 선택하세요.
+Ghidra is analysing the program (only the first time; a big game takes a while)…	Ghidra가 프로그램을 분석하는 중입니다. 처음 한 번만 수행하며 큰 게임은 시간이 걸립니다…
+Listing its maps, pictures, models and sounds…	맵, 그림, 모델과 소리를 나열하는 중…
+Running it with a few inputs to see what it prints…	몇 가지 입력으로 실행하여 출력을 확인하는 중…
+Reading its JavaScript and watching what it does…	JavaScript를 읽고 동작을 관찰하는 중…
+Ready.	준비되었습니다.
+stage	단계
+start	시작
+done	완료
+FAIL	실패
+said	응답
+note	안내
+out	출력
+ERROR	오류
+The release has no signed OMCA update manifest.	릴리스에 서명된 OMCA 업데이트 정보가 없습니다.
+The release has no OMCA update signature.	릴리스에 OMCA 업데이트 서명이 없습니다.
+The update manifest is too large.	업데이트 정보가 너무 큽니다.
+Invalid update public key.	업데이트 공개 키가 올바르지 않습니다.
+The OMCA update signature is invalid.	OMCA 업데이트 서명이 올바르지 않습니다.
+The signed update does not match this OMCA installation or a newer stable release.	서명된 업데이트가 현재 OMCA 설치 또는 더 최신의 정식 릴리스와 일치하지 않습니다.
+No update package for this Mac architecture.	이 Mac의 아키텍처에 맞는 업데이트 패키지가 없습니다.
+OMCA is not inside an app bundle.	OMCA가 앱 번들 안에 있지 않습니다.
+This OMCA executable cannot update itself.	이 OMCA 실행 파일은 자체 업데이트할 수 없습니다.
+Missing installation folder.	설치 폴더가 없습니다.
+This executable is not the registered OMCA installation.	이 실행 파일은 등록된 OMCA 설치본이 아닙니다.
+Internal updates support macOS and Windows installations.	앱 내 업데이트는 macOS 및 Windows 설치본에서 지원됩니다.
+Another update is already pending for this OMCA installation.	이 OMCA 설치본에 이미 다른 업데이트가 대기 중입니다.
+The updater's running version does not match this OMCA binary.	업데이터의 실행 버전이 현재 OMCA 실행 파일과 일치하지 않습니다.
+OMCA's installation changed while downloading the update.	업데이트를 다운로드하는 동안 OMCA 설치가 변경되었습니다.
+The updating process disappeared.	업데이트를 요청한 프로세스가 종료되었습니다.
+The downloaded update does not match its signed SHA-256.	다운로드한 업데이트의 SHA-256이 서명된 값과 일치하지 않습니다.
+Too many files in update archive.	업데이트 압축 파일에 파일이 너무 많습니다.
+Unsafe update archive path.	업데이트 압축 파일의 경로가 안전하지 않습니다.
+Unsafe or duplicate update archive path.	업데이트 압축 파일에 안전하지 않거나 중복된 경로가 있습니다.
+Links and special files are not allowed in updates.	업데이트에는 링크와 특수 파일을 사용할 수 없습니다.
+Update archive expands beyond its limit.	업데이트 압축 해제 크기가 제한을 초과합니다.
+Update archive contains an invalid file size.	업데이트 압축 파일에 크기가 올바르지 않은 파일이 있습니다.
+Empty update archive.	업데이트 압축 파일이 비어 있습니다.
+Update archive must contain exactly one app folder.	업데이트 압축 파일에는 앱 폴더가 정확히 하나 있어야 합니다.
+MSI executable probing happens after Windows Installer commits.	MSI 실행 파일 검사는 Windows Installer 설치가 완료된 뒤 수행됩니다.
+The update is not OMCA.app.	업데이트가 OMCA.app이 아닙니다.
+The update executable does not match the signed identity.	업데이트 실행 파일이 서명된 식별 정보와 일치하지 않습니다.
+The app bundle's OMCA identity or version is incorrect.	앱 번들의 OMCA 식별 정보 또는 버전이 올바르지 않습니다.
+Mac bundles must be verified on macOS.	Mac 앱 번들은 macOS에서 검증해야 합니다.
+OMCA did not exit; the update was not installed.	OMCA가 종료되지 않아 업데이트를 설치하지 않았습니다.
+Invalid update helper arguments.	업데이트 도우미의 인수가 올바르지 않습니다.
+Missing update staging folder.	업데이트 준비 폴더가 없습니다.
+Only OMCA's prepared helper may install an update.	OMCA가 준비한 도우미만 업데이트를 설치할 수 있습니다.
+The update helper does not match the installed OMCA executable.	업데이트 도우미가 설치된 OMCA 실행 파일과 일치하지 않습니다.
+The update destination no longer identifies this OMCA installation.	업데이트 대상이 더 이상 현재 OMCA 설치본을 가리키지 않습니다.
+A different OMCA version was installed before this helper acquired its lease.	업데이트 도우미가 설치 잠금을 얻기 전에 다른 OMCA 버전이 설치되었습니다.
+The update destination changed before installation.	설치 전에 업데이트 대상이 변경되었습니다.
+Missing installation parent.	설치 폴더의 상위 폴더가 없습니다.
+App bundles can only be replaced on macOS.	앱 번들은 macOS에서만 교체할 수 있습니다.
+The installed OMCA executable reports the wrong version.	설치된 OMCA 실행 파일의 버전이 올바르지 않습니다.
+Too many installation files.	설치 파일이 너무 많습니다.
+Linked files are not allowed in the installation transaction.	설치 작업에는 링크된 파일을 사용할 수 없습니다.
+Installation exceeds its size limit.	설치 크기가 제한을 초과합니다.
+Special files are not allowed in the installation transaction.	설치 작업에는 특수 파일을 사용할 수 없습니다.
+The installed executable does not match the signed OMCA release.	설치된 실행 파일이 서명된 OMCA 릴리스와 일치하지 않습니다.
+Windows installers can only run on Windows.	Windows 설치 프로그램은 Windows에서만 실행할 수 있습니다.
+Empty update path.	업데이트 경로가 비어 있습니다.
+An update must not contain credentials, settings, or its transaction receipt.	업데이트에는 인증 정보, 설정 또는 업데이트 작업 기록을 포함할 수 없습니다.
+Update payload exceeds its size limit.	업데이트 내용의 크기가 제한을 초과합니다.
+An update may only contain regular files and folders.	업데이트에는 일반 파일과 폴더만 포함할 수 있습니다.
+Too many update files.	업데이트 파일이 너무 많습니다.
+Unsafe transaction path.	업데이트 작업 경로가 안전하지 않습니다.
+Linked installation paths cannot be replaced.	링크된 설치 경로는 교체할 수 없습니다.
+Missing update destination folder.	업데이트 대상 폴더가 없습니다.
+The portable update journal does not match the verified release.	포터블 업데이트 기록이 검증된 릴리스와 일치하지 않습니다.
+An update file conflicts with an existing folder.	업데이트 파일이 기존 폴더와 충돌합니다.
+Only portable OMCA installs may resume a file transaction.	포터블 OMCA 설치본만 파일 교체 작업을 재개할 수 있습니다.
+Unknown portable update journal version.	포터블 업데이트 기록의 버전을 알 수 없습니다.
+The pending update belongs to a different installation.	대기 중인 업데이트가 다른 설치본에 속합니다.
+The pending update does not belong to this OMCA version.	대기 중인 업데이트가 현재 OMCA 버전에 해당하지 않습니다.
+The running file is not part of this signed OMCA update.	실행 중인 파일이 서명된 OMCA 업데이트에 포함되어 있지 않습니다.
+OMCA changed while acquiring the recovery lease.	복구 잠금을 얻는 동안 OMCA가 변경되었습니다.
+The recovery owner disappeared.	복구를 요청한 프로세스가 종료되었습니다.
+Clean room: nothing inside it is read…	클린룸 모드에서 내부를 읽지 않고 살펴보는 중…
+Starting it for a moment to picture its window…	창을 촬영하기 위해 잠시 실행하는 중…
+Versions and updates	버전 및 업데이트
+The official launcher must be installed first.	먼저 공식 런처를 설치해야 합니다.
+Getting {name}	{name} 받는 중
+Unknown version	알 수 없는 버전
+Installed: {versions}	설치된 버전: {versions}
+Checking the latest stable version…	최신 정식 버전을 확인하는 중…
+Latest stable: {version}	최신 정식 버전: {version}
+Download: {size} MB	다운로드: {size} MB
+Older engine versions are kept. Existing projects are not upgraded.	이전 엔진 버전은 유지됩니다. 기존 프로젝트는 업그레이드되지 않습니다.
+Up to date	최신 버전
+Install update	업데이트 설치
+Install	설치
+The official launcher installer is not available on this operating system.	이 운영체제에서는 공식 런처 설치 프로그램을 제공하지 않습니다.
+Install or update Unreal Engine in the official launcher. This list refreshes when installation finishes.	공식 런처에서 Unreal Engine을 설치하거나 업데이트하세요. 설치가 끝나면 이 목록을 새로 고칩니다.
+The private Rust install has no bin folder.	앱 전용 Rust 설치에 bin 폴더가 없습니다.
+The private Rust install has no cargo folder.	앱 전용 Rust 설치에 cargo 폴더가 없습니다.
+The private Rust install has no version folder.	앱 전용 Rust 설치에 버전 폴더가 없습니다.
+The engine store path cannot be represented in PATH.	엔진 저장 폴더 경로를 PATH에 추가할 수 없습니다.
+Install runs verified official setup programs. Sign-in and licence acceptance remain yours.	설치를 누르면 검증된 공식 설치 프로그램을 실행합니다. 로그인과 라이선스 동의는 직접 진행해야 합니다.
+I confirmed installation is complete in the official launcher. Continue	공식 런처에서 설치가 완료된 것을 확인했습니다. 계속
+Unreal Engine detected. Confirm installation in the official launcher.	Unreal Engine이 감지되었습니다. 공식 런처에서 설치 완료를 확인하세요.
+Check for updates	업데이트 확인
+Unity account and licence setup	Unity 계정 및 라이선스 설정
+Unity account and licence	Unity 계정 및 라이선스
+Complete the official Unity step in your browser. This app is waiting.	브라우저에서 Unity의 공식 절차를 완료하세요. 이 앱은 기다리고 있습니다.
+Check Unity setup	Unity 설정 확인
+Installed does not mean licensed. Check Unity setup before building.	설치되었다고 라이선스를 사용할 수 있는 것은 아닙니다. 빌드 전에 Unity 설정을 확인하세요.
+Unity reports a usable licence.	Unity에서 사용 가능한 라이선스가 확인되었습니다.
+Sign in with Unity's official browser. Craft Anything does not read your password or adopt your Hub account.	Unity의 공식 브라우저 로그인 절차를 이용하세요. Craft Anything은 비밀번호를 읽거나 Hub 계정을 가져오지 않습니다.
+Sign in to Unity	Unity에 로그인
+Signed in. Choose your own licence. No licence is selected or accepted automatically.	로그인되었습니다. 사용할 라이선스를 직접 선택하세요. 라이선스 선택과 동의는 자동으로 진행되지 않습니다.
+Official Unity Personal eligibility	Unity Personal 공식 자격 요건
+Official Unity Editor terms	Unity Editor 공식 약관
+I checked Unity's current Personal eligibility rules and confirm I qualify.	Unity Personal의 현재 자격 요건을 확인했으며, 제가 요건을 충족함을 확인합니다.
+I read and accept the official Unity Personal and Editor terms.	Unity Personal 및 Editor의 공식 약관을 읽었으며 동의합니다.
+Activate Personal with my explicit agreement	위 내용에 명시적으로 동의하고 Personal 활성화
+Activate my existing paid subscription	기존 유료 구독 활성화
+Set up a Unity account and licence	Unity 계정 및 라이선스 설정
+Unity is installed. Complete account and licence setup before building.	Unity가 설치되었습니다. 빌드 전에 계정 및 라이선스 설정을 완료하세요.
+Check the latest engine version	최신 엔진 버전 확인

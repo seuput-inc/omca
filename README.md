@@ -8,12 +8,12 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/seuput-inc/omca/releases/download/v0.4.4/craft-anything-0.4.4-macos-aarch64.dmg"><img src="https://img.shields.io/badge/Install-macOS%20Apple%20silicon-111827?style=for-the-badge&amp;logo=apple&amp;logoColor=white" alt="Install for macOS Apple silicon"></a>
-  <a href="https://github.com/seuput-inc/omca/releases/download/v0.4.4/craft-anything-0.4.4-windows-x64.msi"><img src="https://img.shields.io/badge/Install-Windows%20x64-0078D4?style=for-the-badge" alt="Install for Windows x64"></a>
+  <a href="https://github.com/seuput-inc/omca/releases/download/v0.4.5/craft-anything-0.4.5-macos-aarch64.dmg"><img src="https://img.shields.io/badge/Install-macOS%20Apple%20silicon-111827?style=for-the-badge&amp;logo=apple&amp;logoColor=white" alt="Install for macOS Apple silicon"></a>
+  <a href="https://github.com/seuput-inc/omca/releases/download/v0.4.5/craft-anything-0.4.5-windows-x64.msi"><img src="https://img.shields.io/badge/Install-Windows%20x64-0078D4?style=for-the-badge" alt="Install for Windows x64"></a>
 </p>
 <p align="center">
-  Published release: <a href="https://github.com/seuput-inc/omca/releases/tag/v0.4.4">v0.4.4</a>
-  · <a href="https://github.com/seuput-inc/omca/releases/download/v0.4.4/craft-anything-0.4.4-windows-x64-portable.zip">Windows portable ZIP</a>
+  Published release: <a href="https://github.com/seuput-inc/omca/releases/tag/v0.4.5">v0.4.5</a>
+  · <a href="https://github.com/seuput-inc/omca/releases/download/v0.4.5/craft-anything-0.4.5-windows-x64-portable.zip">Windows portable ZIP</a>
 </p>
 
 ## What it is
@@ -41,7 +41,7 @@ The engine, workflow, Clean room / Deep modes and tool set come from upstream Cr
 - Releases for Apple silicon Macs and Windows x64 only; the interface in Korean and English only.
 - Its own version numbers, starting at 0.1.0, and its own `vX.Y.Z` tags; upstream's tags are not
   kept.
-- No GitHub Actions CI; see [CI (local)](#ci-local).
+- Local CI, with additional Windows-native checks in the manual release workflow; no push or pull-request CI.
 - Internal crate and binary names (`craft_anything_*`, `craft-anything`, `craft-anything-cli`)
   and `CRAFT_ANYTHING_*` environment variables are unchanged, to keep upstream merges simple.
 
@@ -56,9 +56,29 @@ search connected providers and choose the model for the next request. Switching 
 the draft and conversation visible. Active or queued work must finish before switching.
 Unavailable saved project builders require an explicit selection instead of a silent fallback.
 
+**Simple / Advanced** remains visible in both modes. Models & accounts shows model readiness
+and connected-account status separately. Failures show recovery guidance first, with original
+diagnostics in expandable, copyable details instead of a blind rerun.
+
+Choose a common projects folder once, then name each new project. OMCA creates a separate child
+folder without overwriting an existing project. Existing projects can still be opened directly.
+Different projects use isolated execution sessions and run up to the configured parallel-build
+limit. The same project cannot start twice.
+
+The system language is the default for the interface and user-facing agent responses.
+An explicit language setting takes precedence. Korean and English are supported; code,
+identifiers, and original technical diagnostics keep their original language.
+
 The bundled provider runtime uses the public omp SDK with OMCA's private credential store.
 Provider-specific warnings and disabled-provider rules still apply. API keys use a separate
 connection form. The standalone CLI retains its separately configured agent integrations.
+
+Game-engine setup stays in the app. Godot and Rust use verified, versioned managed installs.
+Unity uses its official CLI, with separate sign-in and license actions. Personal-license
+activation requires your explicit eligibility and terms confirmation; agents cannot grant it.
+Existing projects keep their engine version instead of being migrated automatically.
+Unreal uses the official Epic Games Launcher for installation and updates. After the launcher
+finishes, confirm completion in OMCA; finding an editor file alone does not auto-start a build.
 
 ## Platforms and languages
 
@@ -105,11 +125,13 @@ cargo xtask version set X.Y.Z && git commit -am "Release X.Y.Z"
 packaging/release.sh
 ```
 
-`packaging/release.sh` runs the gate, builds the macOS DMG and CLI zip locally
-(`packaging/macos/package.sh`; ad-hoc signed unless `MACOS_SIGN_IDENTITY` is set, notarized with
-`APPLE_ID` / `APPLE_PASSWORD` / `APPLE_TEAM_ID`), tags `vX.Y.Z`, publishes the GitHub release and
-starts `release-windows.yml`, the only Actions workflow (manual, never on push), which attaches the
-Windows MSI and portable zip.
+`packaging/release.sh` runs the gate and builds the macOS DMG, CLI ZIP, and signed update ZIP.
+OS signing is ad-hoc unless `MACOS_SIGN_IDENTITY` is set. Notarization uses `APPLE_ID`,
+`APPLE_PASSWORD`, and `APPLE_TEAM_ID`. Update manifests require `OMCA_UPDATE_SIGNING_KEY_FILE`
+or `OMCA_UPDATE_SIGNING_KEY`, matching the pinned public key.
+The script publishes `vX.Y.Z` and starts the manual `release-windows.yml`, which attaches the
+MSI, portable ZIP, and their signed manifests. `sign-updates.yml` can sign an existing release's
+macOS update ZIP with the encrypted repository secret. Neither workflow runs on push.
 
 ## Upstream
 
@@ -120,11 +142,13 @@ OMCA 0.4.1 follows the locally installed 0.4.0 build; upstream version tags rema
 The upstream changes include parser and archive safety fixes, builder/session recovery,
 settings-file preservation, website traffic recording and application update checks.
 
-Settings → Updates and Help → Check for Updates use the same `seuput-inc/omca` release check
-and recognize the existing `craft-anything-*` package names. Settings shows the installed version.
-On macOS, use the Releases link to install manually:
-the upstream installer only accepts the original app's bundle ID and signing team.
-OMCA does not bypass those signature checks.
+Settings → Updates and Help → Check for Updates use the same `seuput-inc/omca` release check.
+**Update and restart** downloads an OMCA-signed package, verifies its pinned Ed25519 signature,
+version, platform, and hash, then replaces the application and restarts the same installation.
+Account credentials, settings, and projects remain outside the replacement payload.
+Windows portable updates leave `OMCAData` in place. Windows installer updates can request normal
+UAC approval; OMCA does not save administrator passwords or change system security settings.
+Versions through 0.4.4 need one manual installation to gain this updater.
 
 
 ```sh

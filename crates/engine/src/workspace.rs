@@ -660,12 +660,12 @@ pub fn absolute(path: &Path) -> PathBuf {
     std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf())
 }
 
-/// A folder-name slug: lower-case words joined by dashes, at most 40 characters.
+/// A portable folder-name slug: words joined by dashes, at most 40 characters.
 pub fn slug(s: &str) -> String {
     let mut out = String::new();
     for c in s.chars() {
-        if c.is_ascii_alphanumeric() {
-            out.push(c.to_ascii_lowercase());
+        if c.is_alphanumeric() {
+            out.extend(c.to_lowercase());
         } else if !out.ends_with('-') && !out.is_empty() {
             out.push('-');
         }
@@ -673,8 +673,42 @@ pub fn slug(s: &str) -> String {
             break;
         }
     }
-    let out = out.trim_matches('-').to_string();
-    if out.is_empty() { "project".into() } else { out }
+    let out = out.trim_matches('-');
+    if out.is_empty() {
+        "project".into()
+    } else if reserved_folder_name(out) {
+        format!("project-{out}")
+    } else {
+        out.to_string()
+    }
+}
+
+fn reserved_folder_name(name: &str) -> bool {
+    let stem = name.split('.').next().unwrap_or_default();
+    ["CON", "PRN", "AUX", "NUL"].iter().any(|reserved| stem.eq_ignore_ascii_case(reserved))
+        || (stem.get(..3).is_some_and(|prefix| prefix.eq_ignore_ascii_case("COM") || prefix.eq_ignore_ascii_case("LPT"))
+            && stem.get(3..).is_some_and(|suffix| matches!(suffix, "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "¹" | "²" | "³")))
+}
+
+/// Whether an explicit project name can be used as a portable single folder component.
+/// An empty name leaves naming to the caller's request-based suggestion.
+pub fn project_name_problem(name: &str) -> Option<&'static str> {
+    if name.is_empty() {
+        return None;
+    }
+    let trimmed = name.trim();
+    if trimmed.is_empty()
+        || trimmed == "."
+        || trimmed == ".."
+        || name.ends_with(['.', ' '])
+        || name.chars().any(|c| c.is_control() || matches!(c, '/' | '\\' | '<' | '>' | ':' | '"' | '|' | '?' | '*'))
+        || reserved_folder_name(trimmed)
+        || name.len() > 120
+    {
+        Some("Use a short project name without path separators or reserved filename characters.")
+    } else {
+        None
+    }
 }
 
 /// A short name from a request and target: the site's host, the file's stem, or the first words.
@@ -693,6 +727,7 @@ impl Workspace {
     /// Create a new workspace folder under `projects_dir` (a fresh, unique folder).
     pub fn create(projects_dir: &Path, name: &str, request: &str, target: TargetRef) -> Result<Workspace, ToolError> {
         std::fs::create_dir_all(projects_dir).map_err(|e| ToolError::io(projects_dir.display(), e))?;
+        let projects_dir = std::fs::canonicalize(projects_dir).map_err(|e| ToolError::io(projects_dir.display(), e))?;
         let base = slug(name);
         let mut root = projects_dir.join(&base);
         let mut n = 2;
@@ -813,17 +848,19 @@ impl Workspace {
                 manifest.start_files = names;
             }
         }
-        let ws = Workspace { root: folder.to_path_buf(), manifest };
+        let root = std::fs::canonicalize(folder).map_err(|e| ToolError::io(folder.display(), e))?;
+        let ws = Workspace { root, manifest };
         ws.save()?;
         Ok(ws)
     }
 
     pub fn open(root: &Path) -> Result<Workspace, ToolError> {
+        let root = std::fs::canonicalize(root).map_err(|e| ToolError::io(root.display(), e))?;
         let path = root.join(MANIFEST);
         let bytes = std::fs::read(&path).map_err(|e| ToolError::io(path.display(), e))?;
         let manifest = read_manifest(&bytes)
             .map_err(|e| if e.code == ErrorCode::NotSupported { e } else { ToolError::invalid(format!("{} is unreadable: {}", path.display(), e.message)) })?;
-        Ok(Workspace { root: root.to_path_buf(), manifest })
+        Ok(Workspace { root, manifest })
     }
 
     /// Made by a newer OMCA: it can be looked at but not changed (saving is refused, so
@@ -1584,6 +1621,53 @@ mod tests {
         assert!(slug(&"a".repeat(100)).len() <= 40);
         assert_eq!(suggest_name("x", &TargetRef::Website { url: "https://www.example.com/a?b".into() }), "example.com");
         assert_eq!(suggest_name("Make a snake game in Rust please", &TargetRef::None), "Make a snake game in");
+    }
+
+    #[test]
+    fn windows_superscript_device_names_are_reserved() {
+        for prefix in ["COM", "com", "LPT", "lpt"] {
+            for digit in ["¹", "²", "³"] {
+                let name = format!("{prefix}{digit}");
+                assert!(project_name_problem(&name).is_some(), "{name}");
+                assert!(project_name_problem(&format!("{name}.txt")).is_some());
+                assert!(slug(&name).starts_with("project-"));
+            }
+        }
+        for name in ["COM¹notes", "LPT²extra", "common", "template"] {
+            assert_eq!(project_name_problem(name), None);
+        }
+    }
+
+    #[test]
+    fn named_project_folders_are_portable_and_created_exclusively() {
+        for name in ["../escape", "a/b", "a\\b", ".", "..", "CON", "con.txt", "Lpt9", "a:", "trailing.", "trailing ", "  ", "\0"] {
+            assert!(project_name_problem(name).is_some(), "{name:?}");
+        }
+        assert_eq!(project_name_problem("나의 프로젝트"), None);
+        assert_eq!(slug("나의 프로젝트"), "나의-프로젝트");
+        assert_eq!(slug("CON"), "project-con");
+        let dir = tempfile::tempdir().unwrap();
+        let parent = dir.path().join("projects");
+        std::fs::create_dir_all(parent.join("notes")).unwrap();
+        std::fs::write(parent.join("notes/keep.txt"), "untouched").unwrap();
+        let creators = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let children: Vec<_> = (0..2)
+            .map(|_| {
+                let parent = parent.clone();
+                let creators = creators.clone();
+                std::thread::spawn(move || {
+                    creators.wait();
+                    Workspace::create(&parent, "Notes", "A website", TargetRef::None).unwrap()
+                })
+            })
+            .collect();
+        let mut roots: Vec<_> = children.into_iter().map(|child| child.join().unwrap().root).collect();
+        roots.sort();
+        assert_eq!(roots, [parent.join("notes-2"), parent.join("notes-3")]);
+        assert_eq!(std::fs::read_to_string(parent.join("notes/keep.txt")).unwrap(), "untouched");
+        for root in roots {
+            assert_eq!(Workspace::open(&root).unwrap().manifest.name, "Notes");
+        }
     }
 
     #[test]

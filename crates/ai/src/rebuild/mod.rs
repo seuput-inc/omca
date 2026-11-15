@@ -152,6 +152,10 @@ pub struct RunOptions {
     /// A free session is read first; this is the fallback while it is held; the saved settings
     /// are the last fallback.
     pub clean_room: Option<bool>,
+    /// UI language captured for this run; empty uses run settings/system locale.
+    pub response_language: String,
+    /// Immutable tool registrations captured before a caller holds the parent session lock.
+    pub services: Option<craft_anything_engine::session::ToolServices>,
 }
 
 impl Default for RunOptions {
@@ -169,6 +173,8 @@ impl Default for RunOptions {
             adapters: Default::default(),
             wake: Wake::default(),
             clean_room: None,
+            response_language: String::new(),
+            services: None,
         }
     }
 }
@@ -246,6 +252,35 @@ fn starts_with_study(opts: &RunOptions, kept: KeptHistory, usable_capture: bool)
     !usable_capture || (!kept.in_mode && (opts.message.is_none() || kept.elsewhere))
 }
 
+/// A run owns its tool session. Only immutable tool/provider definitions and credential storage
+/// are shared with the app; targets, project, approvals, caches and cancellation stay independent.
+fn project_hub(hub: &AiHub, opts: &mut RunOptions) -> AiHub {
+    let path = hub.settings_path();
+    let (settings, deep, config_dir, services) = match hub.engine.try_session() {
+        Some(session) => {
+            (session.settings.clone(), !session.clean_room(), session.config_dir(), Some(craft_anything_engine::session::ToolServices::capture(&session)))
+        }
+        None => {
+            let settings = craft_anything_engine::Settings::load_from(&path);
+            let deep = opts.clean_room.map_or(settings.deep_mode, |clean| !clean);
+            let dir = path.parent().unwrap_or(Path::new(".")).to_path_buf();
+            (settings, deep, dir, None)
+        }
+    };
+    if opts.response_language.trim().is_empty() {
+        opts.response_language = crate::prompt::response_language(&settings.language);
+    }
+    let mut session = craft_anything_engine::Session::isolated(&config_dir);
+    session.settings = settings;
+    session.deep_for_run = Some(deep);
+    if let Some(services) = opts.services.as_ref().or(services.as_ref()) {
+        services.install(&mut session);
+    }
+    let engine = hub.engine.fork_session(session);
+    let scoped = AiHub::with_stores(engine, path, hub.keys.clone());
+    if hub.managed_only { scoped.managed_only() } else { scoped }
+}
+
 /// A running (or finished) rebuild.
 pub struct RebuildRun {
     rx: Receiver<RunEvent>,
@@ -266,11 +301,13 @@ pub struct RebuildRun {
 
 impl RebuildRun {
     /// Start a run on a worker thread. Fails fast (before any work) when no coding agent is set up.
-    pub fn start(hub: &AiHub, ws: Workspace, opts: RunOptions) -> Result<RebuildRun, ToolError> {
+    pub fn start(hub: &AiHub, ws: Workspace, mut opts: RunOptions) -> Result<RebuildRun, ToolError> {
         // The project as it is now. A run that waited in the queue, or one started as the project's
         // last run was ending, holds a copy from before that run's last saves (its session), and
         // everything below, the worker's saves included, works from this copy.
         let mut ws = Workspace::open(&ws.root).unwrap_or(ws);
+        let scoped = project_hub(hub, &mut opts);
+        let hub = &scoped;
         let cfg = hub.config();
         let entry = hub.selected_backend(&cfg, &ws, opts.backend.as_deref())?;
         // The person's choice of mode is a session setting. A run that waited its turn uses the mode
@@ -298,7 +335,7 @@ impl RebuildRun {
                 if !continuing && !ws.capture_dir().exists() {
                     let _ = std::fs::remove_file(ws.transcript_path());
                 }
-                Some(hub.start_builder(&entry, opts.beginner, Some(ws.transcript_path()), run_deep)?)
+                Some(hub.start_builder(&entry, opts.beginner, Some(ws.transcript_path()), run_deep, &opts.response_language)?)
             }
         };
         // A chosen extractor (an API backend, e.g. Kimi K3) takes a game's files out after a fresh
@@ -307,7 +344,7 @@ impl RebuildRun {
         let extractor = match hub.chosen(Role::Extractor).and_then(|n| hub.config().get(&n).cloned()) {
             Some(e) if fresh && e.config.kind != BackendKind::AgentCli && !clean_room => {
                 let _ = std::fs::remove_file(ws.root.join(EXTRACT_TRANSCRIPT));
-                Some((e.config.name.clone(), hub.start_extractor(&e, opts.beginner, Some(ws.root.join(EXTRACT_TRANSCRIPT)))?))
+                Some((e.config.name.clone(), hub.start_extractor(&e, opts.beginner, Some(ws.root.join(EXTRACT_TRANSCRIPT)), &opts.response_language)?))
             }
             _ => None,
         };
@@ -332,6 +369,7 @@ impl RebuildRun {
         }
         let ctx = Worker {
             wake: opts.wake.clone(),
+            response_language: opts.response_language.clone(),
             engine: hub.engine.clone(),
             tx,
             stop: stop.clone(),
@@ -534,6 +572,7 @@ fn needs_decompile_reminder(deep: bool, manifest: &craft_anything_engine::worksp
 struct Worker {
     /// Told after each event.
     wake: Wake,
+    response_language: String,
     engine: Arc<Engine>,
     tx: Sender<RunEvent>,
     stop: CancelToken,
@@ -754,7 +793,7 @@ impl Worker {
     /// The editor for a game-engine stack. An engine that isn't ready stops the run before any
     /// work, with the way to get it.
     fn find_editor(&self, stack: &str) -> Result<Option<PathBuf>, ToolError> {
-        let Some(b) = game::Builder::from_stack(stack).filter(|b| *b != game::Builder::Rust) else { return Ok(None) };
+        let Some(b) = game::Builder::from_stack(stack) else { return Ok(None) };
         let store = self.engine.session().settings.engine_store_dir();
         let inv = game::inventory(&game::Places::here(store));
         match inv.best(b) {
@@ -769,13 +808,17 @@ impl Worker {
     /// is held by the first until the statement ends, and the second then waits forever. A saved
     /// Claude `--resume` that would continue the project's Deep session in Clean room is refused.
     fn agent_spec(&self, ws: &Workspace, entry: &crate::BackendEntry, opts: &RunOptions) -> Result<CliSpec, ToolError> {
-        let (deep, config_dir, targets) = {
+        let (deep, config_dir, targets, store) = {
             let session = self.engine.session();
-            (!session.clean_room(), session.config_dir(), session.shared_targets())
+            (!session.clean_room(), session.config_dir(), session.shared_targets(), session.settings.engine_store_dir())
         };
         refuse_deep_session_reuse_in_clean_room(ws, &entry.config.model, &entry.options.args, deep)?;
+        let toolchain_env =
+            if entry.config.ssh_host.as_deref().is_some_and(|host| !host.trim().is_empty()) { Vec::new() } else { game::rust_environment(&store)? };
         Ok(CliSpec {
             builder: Some(Builder { investigation: Some(ws.investigation_dir()), inbox: ws.inbox_dir() }),
+            response_language: opts.response_language.clone(),
+            toolchain_env,
             deep,
             targets,
             logs: Some(crate::failure_log::dir_in(&config_dir)),
@@ -1329,10 +1372,11 @@ impl Worker {
     }
 
     fn converse_turn(&mut self, ws: &mut Workspace, agent: &mut dyn Conversation, text: &str, retry: bool) -> Result<String, ToolError> {
+        let text = crate::prompt::with_response_language(text, &self.response_language);
         if retry {
-            agent.retry(text);
+            agent.retry(&text);
         } else {
-            agent.send(text);
+            agent.send(&text);
         }
         let mut reply = String::new();
         let mut failed = None;

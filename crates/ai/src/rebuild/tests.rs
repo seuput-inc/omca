@@ -38,7 +38,7 @@ model = "gemini-cli"
     assert_eq!(hub.config_to_change().unwrap().backends.len(), 2);
     assert!(hub.detect().is_empty());
     let stale = hub.config_to_change().unwrap().get("Gemini").unwrap().clone();
-    assert_eq!(hub.start_builder(&stale, false, None, false).err().unwrap().code, ErrorCode::BadSettings);
+    assert_eq!(hub.start_builder(&stale, false, None, false, "en").err().unwrap().code, ErrorCode::BadSettings);
     assert_eq!(hub.build_model(&stale).err().unwrap().code, ErrorCode::BadSettings);
     assert_eq!(hub.start(Some("Gemini"), false).err().unwrap().code, ErrorCode::BadSettings);
     let slot = hub.build_model(cfg.get("Codex").unwrap()).unwrap();
@@ -535,6 +535,7 @@ fn notes_added_while_it_works_reach_the_agent_at_its_next_step() {
     let notes: Arc<Mutex<Vec<Note>>> = Arc::default();
     let w = Worker {
         wake: Default::default(),
+        response_language: crate::prompt::response_language(""),
         engine: Arc::new(Engine::new(craft_anything_engine::testing::session())),
         tx,
         stop: CancelToken::default(),
@@ -1484,6 +1485,7 @@ fn an_api_backend_builds_with_the_build_tools() {
     let (tx, _rx) = std::sync::mpsc::channel();
     let mut w = Worker {
         wake: Default::default(),
+        response_language: crate::prompt::response_language(""),
         engine: engine.clone(),
         tx,
         stop: CancelToken::default(),
@@ -1622,6 +1624,7 @@ fn the_mechanics_sheet_is_required_without_claiming_effective_behavior() {
     let (tx, _rx) = std::sync::mpsc::channel();
     let w = Worker {
         wake: Default::default(),
+        response_language: crate::prompt::response_language(""),
         engine,
         tx,
         stop: CancelToken::default(),
@@ -2937,6 +2940,7 @@ pub(crate) fn check_worker(ws: &Workspace, deep: bool) -> Worker {
     let (tx, _rx) = std::sync::mpsc::channel();
     Worker {
         wake: Default::default(),
+        response_language: crate::prompt::response_language(""),
         engine: Arc::new(Engine::new(s)),
         tx,
         stop: CancelToken::default(),
@@ -3537,6 +3541,7 @@ fn preparing_the_builders_agent_does_not_lock_up() {
     let (tx, _rx) = std::sync::mpsc::channel();
     let w = Worker {
         wake: Default::default(),
+        response_language: crate::prompt::response_language(""),
         engine: Arc::new(Engine::new(craft_anything_engine::testing::session())),
         tx,
         stop: CancelToken::default(),
@@ -3580,6 +3585,7 @@ fn the_run_answers_the_builders_own_check_during_its_turn() {
     let (tx, rx) = std::sync::mpsc::channel();
     let mut w = Worker {
         wake: Default::default(),
+        response_language: crate::prompt::response_language(""),
         engine: Arc::new(Engine::new(craft_anything_engine::testing::session())),
         tx,
         stop: CancelToken::default(),
@@ -3619,6 +3625,7 @@ fn a_stopped_build_answers_the_check_it_took() {
     let (tx, _rx) = std::sync::mpsc::channel();
     let mut w = Worker {
         wake: Default::default(),
+        response_language: crate::prompt::response_language(""),
         engine: Arc::new(Engine::new(craft_anything_engine::testing::session())),
         tx,
         stop: CancelToken::default(),
@@ -3680,6 +3687,7 @@ fn decompiling_once_is_remembered_by_the_project() {
     let (tx, _rx) = std::sync::mpsc::channel();
     let mut w = Worker {
         wake: Default::default(),
+        response_language: crate::prompt::response_language(""),
         engine: Arc::new(Engine::new(craft_anything_engine::testing::session())),
         tx,
         stop: CancelToken::default(),
@@ -3889,6 +3897,7 @@ fn a_note_the_builder_took_at_a_step_joins_the_feed_and_isnt_sent_again() {
     let (tx, rx) = std::sync::mpsc::channel();
     let mut w = Worker {
         wake: Default::default(),
+        response_language: crate::prompt::response_language(""),
         engine: Arc::new(Engine::new(craft_anything_engine::testing::session())),
         tx,
         stop: CancelToken::default(),
@@ -4338,6 +4347,7 @@ fn a_session_left_on_another_computer_starts_a_new_one_from_the_project() {
     let (tx, rx) = std::sync::mpsc::channel();
     let mut w = Worker {
         wake: Default::default(),
+        response_language: crate::prompt::response_language(""),
         engine: Arc::new(Engine::new(craft_anything_engine::testing::session())),
         tx,
         stop: CancelToken::default(),
@@ -4394,6 +4404,7 @@ fn a_missing_session_with_nothing_to_start_from_is_said_plainly() {
     let (tx, _rx) = std::sync::mpsc::channel();
     let mut w = Worker {
         wake: Default::default(),
+        response_language: crate::prompt::response_language(""),
         engine: Arc::new(Engine::new(craft_anything_engine::testing::session())),
         tx,
         stop: CancelToken::default(),
@@ -4461,6 +4472,7 @@ fn the_builders_conversation_travels_with_the_project() {
     let (tx, rx) = std::sync::mpsc::channel();
     let w = Worker {
         wake: Default::default(),
+        response_language: crate::prompt::response_language(""),
         engine: Arc::new(Engine::new(craft_anything_engine::testing::session())),
         tx,
         stop: CancelToken::default(),
@@ -4539,6 +4551,7 @@ fn a_build_says_when_it_waits_for_an_analysis_started_earlier() {
     let (tx, rx) = std::sync::mpsc::channel();
     let w = Worker {
         wake: Default::default(),
+        response_language: crate::prompt::response_language(""),
         engine: Arc::new(Engine::new(s)),
         tx,
         stop: CancelToken::default(),
@@ -4601,6 +4614,7 @@ fn a_later_run_opens_the_projects_program_again_for_the_builder() {
         let (tx, _rx) = std::sync::mpsc::channel();
         let mut w = Worker {
             wake: Default::default(),
+            response_language: crate::prompt::response_language(""),
             engine: Arc::new(Engine::new(s)),
             tx,
             stop: CancelToken::default(),

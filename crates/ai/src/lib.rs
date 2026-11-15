@@ -590,11 +590,14 @@ impl AiHub {
     /// Save the AI configuration into the settings file, then the session: a save that fails
     /// changes nothing, so the app never shows a backend or role that isn't saved.
     pub fn save_config(&self, cfg: &AiConfig) -> Result<(), ToolError> {
-        let table = cfg.to_table()?;
         let mut s = self.engine.session();
-        let mut next = s.settings.clone();
-        next.ai = table;
-        next.save_to(&self.settings_path())?;
+        let baseline = AiConfig::from_table(&s.settings.ai)?;
+        let next = s.settings.update_to(&self.settings_path(), |settings| {
+            let mut current = AiConfig::from_table(&settings.ai)?;
+            current.apply_changes(&baseline, cfg);
+            settings.ai = current.to_table()?;
+            Ok(())
+        })?;
         s.settings = next;
         Ok(())
     }
@@ -635,6 +638,7 @@ impl AiHub {
     /// Choose the backend for `role`; `None` goes back to its default (the builder: an agent app,
     /// else any AI backend; the extractor: none).
     pub fn set_role(&self, role: Role, name: Option<&str>) -> Result<(), ToolError> {
+        let _edit = self.backend_edits.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut cfg = self.config_to_change()?;
         let role = config::role_key(role).to_string();
         match name {
@@ -748,6 +752,7 @@ impl AiHub {
         if entry.config.name.trim().is_empty() {
             return Err(ToolError::invalid("A backend needs a name."));
         }
+        let _edit = self.backend_edits.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut cfg = self.config_to_change()?;
         if let Some(k) = key.filter(|k| !k.trim().is_empty()) {
             self.keys.set(&entry.config.name, k.trim())?;
@@ -763,6 +768,7 @@ impl AiHub {
     /// (one from an older version, or one copied in) would otherwise send a new id every run, which
     /// OpenCode Go doesn't route efficiently.
     pub fn ensure_session_id(&self) -> Result<bool, ToolError> {
+        let _edit = self.backend_edits.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut cfg = self.config_to_change()?;
         if !give_session_id(&mut cfg) {
             return Ok(false);
@@ -774,7 +780,10 @@ impl AiHub {
     /// Turn a backend on or off; it keeps its settings and key. Returns false when there was no
     /// such backend.
     pub fn set_enabled(&self, name: &str, on: bool) -> Result<bool, ToolError> {
+        let _edit = self.backend_edits.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut cfg = self.config_to_change()?;
+        #[cfg(test)]
+        tests::pause_enabled_after_read();
         let Some(b) = cfg.backends.iter_mut().find(|b| b.config.name == name) else { return Ok(false) };
         b.config.enabled = on;
         self.save_config(&cfg)?;
@@ -785,6 +794,7 @@ impl AiHub {
     /// usual install folders). Returns false when there was no such backend.
     pub fn set_command(&self, name: &str, command: Option<&str>) -> Result<bool, ToolError> {
         let command = command.map(str::trim).filter(|c| !c.is_empty());
+        let _edit = self.backend_edits.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut cfg = self.config_to_change()?;
         let Some(b) = cfg.backends.iter_mut().find(|b| b.config.name == name) else { return Ok(false) };
         // A folder can't be started, and on a Mac an app is one (#467: the file picker returned
@@ -807,6 +817,7 @@ impl AiHub {
     /// `~/`; over SSH it's a folder on that computer. Returns false when there was no such backend.
     pub fn set_config_dir(&self, name: &str, dir: Option<&str>) -> Result<bool, ToolError> {
         let dir = dir.map(str::trim).filter(|d| !d.is_empty());
+        let _edit = self.backend_edits.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut cfg = self.config_to_change()?;
         let Some(b) = cfg.backends.iter_mut().find(|b| b.config.name == name) else { return Ok(false) };
         if let Some(d) = dir {
@@ -856,6 +867,7 @@ impl AiHub {
         if self.config().get(name).is_some_and(|e| e.config.kind == BackendKind::AgentCli && cli_agents::adapter_for(&e.config.model).has_model_catalog()) {
             return self.set_agent_model(name, Some(model), None);
         }
+        let _edit = self.backend_edits.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut cfg = self.config_to_change()?;
         let Some(b) = cfg.backends.iter_mut().find(|b| b.config.name == name) else { return Ok(false) };
         match b.config.kind {
@@ -876,6 +888,7 @@ impl AiHub {
     /// How hard a backend thinks (`None`: the usual level again). Only the levels in
     /// [`effort_levels`] are taken. Returns false when there was no such backend.
     pub fn set_effort(&self, name: &str, effort: Option<Effort>) -> Result<bool, ToolError> {
+        let _edit = self.backend_edits.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut cfg = self.config_to_change()?;
         let Some(b) = cfg.backends.iter_mut().find(|b| b.config.name == name) else { return Ok(false) };
         let levels = effort_levels(&b.config);
@@ -943,6 +956,7 @@ impl AiHub {
                 .with_remediation("Choose a connected model in Settings → Models & accounts."));
         }
         let options = cli_agents::models::select(context, model, thinking)?;
+        let _edit = self.backend_edits.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         // Re-read and compare under the same lock as the save. A long catalogue lookup must
         // not overwrite another settings change that finished while it was running.
         let mut session = self.engine.session();
@@ -961,9 +975,16 @@ impl AiHub {
 
     /// Save a model picker's two settings together, before replacing the in-memory config.
     pub fn set_model_options(&self, params: &model_options::SetModelOptions) -> Result<(), ToolError> {
-        let mut config = self.config_to_change()?;
-        model_options::update(&mut config, params)?;
-        self.save_config(&config)
+        let _edit = self.backend_edits.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut session = self.engine.session();
+        let next = session.settings.update_to(&self.settings_path(), |settings| {
+            let mut config = AiConfig::from_table(&settings.ai)?;
+            model_options::update(&mut config, params)?;
+            settings.ai = config.to_table()?;
+            Ok(())
+        })?;
+        session.settings = next;
+        Ok(())
     }
 
     /// Remove a backend and its stored key. Returns false when there was no such backend.
@@ -1231,8 +1252,12 @@ impl AiHub {
             }
         }
         let host = Arc::new(EngineHost(self.engine.clone()));
-        let conv =
-            ApiConversation::start(host, chain, LoopConfig { beginner, prices: cfg.prices.clone(), logs: self.failure_logs(), ..LoopConfig::default() })?;
+        let response_language = prompt::response_language(&self.engine.session().settings.language);
+        let conv = ApiConversation::start(
+            host,
+            chain,
+            LoopConfig { beginner, response_language, prices: cfg.prices.clone(), logs: self.failure_logs(), ..LoopConfig::default() },
+        )?;
         Ok(Box::new(conv))
     }
 
@@ -1242,37 +1267,48 @@ impl AiHub {
     /// `transcript`: where the conversation is kept, and resumed from when it's there in this
     /// mode. `deep` is the run's mode, given by the caller: a tool that starts a build holds the
     /// session (#1102).
-    pub fn start_builder(&self, entry: &BackendEntry, beginner: bool, transcript: Option<PathBuf>, deep: bool) -> Result<ApiConversation, ToolError> {
-        use craft_anything_engine::Toolset;
-        let toolsets = if deep { self.engine.registry().toolsets() } else { vec![Toolset::Core, Toolset::Build] };
-        self.start_loop(entry, beginner, transcript, deep, &toolsets, true)
-    }
-
-    /// Start the asset extractor: our agent loop with the Build tools and the game archive tools.
-    pub fn start_extractor(&self, entry: &BackendEntry, beginner: bool, transcript: Option<PathBuf>) -> Result<ApiConversation, ToolError> {
-        use craft_anything_engine::Toolset;
-        self.start_loop(entry, beginner, transcript, true, &[Toolset::Core, Toolset::Build, Toolset::Formats], false)
-    }
-
-    /// Start one loop with these toolsets, keeping its transcript and resuming it only in `deep`.
-    fn start_loop(
+    pub fn start_builder(
         &self,
         entry: &BackendEntry,
         beginner: bool,
         transcript: Option<PathBuf>,
         deep: bool,
-        toolsets: &[craft_anything_engine::Toolset],
-        lean_for_local: bool,
+        response_language: &str,
     ) -> Result<ApiConversation, ToolError> {
+        use craft_anything_engine::Toolset;
+        let toolsets = if deep { self.engine.registry().toolsets() } else { vec![Toolset::Core, Toolset::Build] };
+        let cfg = LoopConfig {
+            beginner,
+            transcript,
+            deep,
+            response_language: prompt::response_language(response_language),
+            lean_for_local: true,
+            ..LoopConfig::default()
+        };
+        self.start_loop(entry, cfg, &toolsets)
+    }
+
+    /// Start the asset extractor: our agent loop with the Build tools and the game archive tools.
+    pub fn start_extractor(
+        &self,
+        entry: &BackendEntry,
+        beginner: bool,
+        transcript: Option<PathBuf>,
+        response_language: &str,
+    ) -> Result<ApiConversation, ToolError> {
+        use craft_anything_engine::Toolset;
+        let cfg = LoopConfig { beginner, transcript, deep: true, response_language: prompt::response_language(response_language), ..LoopConfig::default() };
+        self.start_loop(entry, cfg, &[Toolset::Core, Toolset::Build, Toolset::Formats])
+    }
+
+    /// Start one loop with these toolsets, keeping its transcript and resuming it only in `deep`.
+    fn start_loop(&self, entry: &BackendEntry, mut cfg: LoopConfig, toolsets: &[craft_anything_engine::Toolset]) -> Result<ApiConversation, ToolError> {
         let mut slot = self.build_model(entry)?;
         slot.max_turns = slot.max_turns.max(agent::BUILDER_MAX_TURNS);
         let host = Arc::new(EngineHost(self.engine.clone()));
-        ApiConversation::start_with(
-            host,
-            vec![slot],
-            LoopConfig { beginner, prices: self.config().prices.clone(), transcript, deep, lean_for_local, logs: self.failure_logs(), ..LoopConfig::default() },
-            toolsets.iter().copied().collect(),
-        )
+        cfg.prices = self.config().prices.clone();
+        cfg.logs = self.failure_logs();
+        ApiConversation::start_with(host, vec![slot], cfg, toolsets.iter().copied().collect())
     }
 
     /// Start a conversation with whichever backend fills `role` in the crew.

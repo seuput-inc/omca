@@ -140,11 +140,52 @@ struct Route {
     remote: String,
 }
 
-/// The session's plugins: their settings, running clients and the tool routes.
+#[derive(Default)]
+struct Catalog {
+    servers: HashMap<String, McpPlugin>,
+    routes: HashMap<&'static str, Route>,
+}
+
+/// The session's immutable registrations and its independent running clients.
 #[derive(Default)]
 pub struct Plugins {
-    servers: HashMap<String, (McpPlugin, Mutex<Option<McpClient>>)>,
-    routes: HashMap<&'static str, Route>,
+    catalog: Arc<Catalog>,
+    clients: HashMap<String, Mutex<Option<McpClient>>>,
+}
+
+impl Plugins {
+    fn from_catalog(catalog: Arc<Catalog>) -> Self {
+        let clients = catalog.servers.keys().map(|id| (id.clone(), Mutex::new(None))).collect();
+        Self { catalog, clients }
+    }
+}
+
+/// Plugin registrations that can be installed into independent execution sessions.
+#[derive(Clone, Default)]
+pub struct RunServices {
+    catalog: Option<Arc<Catalog>>,
+    wasm: crate::wasm_plugins::RunServices,
+}
+
+impl std::fmt::Debug for RunServices {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RunServices").field("mcp", &self.catalog.is_some()).field("wasm", &self.wasm).finish()
+    }
+}
+
+impl RunServices {
+    pub fn capture(session: &Session) -> Self {
+        Self { catalog: session.ext.get::<Plugins>().map(|plugins| plugins.catalog.clone()), wasm: crate::wasm_plugins::RunServices::capture(session) }
+    }
+
+    pub fn install(&self, session: &mut Session) {
+        if let Some(catalog) = &self.catalog {
+            session.ext.insert(Arc::new(Plugins::from_catalog(catalog.clone())));
+        } else {
+            session.ext.remove::<Plugins>();
+        }
+        self.wasm.install(session);
+    }
 }
 
 /// A remote tool name as part of our id: lower case, `_` for anything else, no repeats.
@@ -186,7 +227,7 @@ fn effects_of(t: &RemoteTool, consent: bool, remote: bool) -> Effects {
 /// [`crate::Engine::shared_with`]. A plugin with an invalid id, or a tool whose id clashes, is
 /// skipped and logged.
 pub fn install(session: &mut Session) -> Vec<RuntimeTool> {
-    let mut plugins = Plugins::default();
+    let mut catalog = Catalog::default();
     let mut tools = Vec::new();
     let config = session.config_dir();
     for p in session.settings.plugins.mcp.iter().filter(|p| p.enabled) {
@@ -205,7 +246,7 @@ pub fn install(session: &mut Session) -> Vec<RuntimeTool> {
             }
             let schema = if t.input_schema.is_object() { t.input_schema.clone() } else { json!({"type": "object"}) };
             let leaked: &'static str = Box::leak(id.clone().into_boxed_str());
-            plugins.routes.insert(leaked, Route { server: p.id.clone(), remote: t.name.clone() });
+            catalog.routes.insert(leaked, Route { server: p.id.clone(), remote: t.name.clone() });
             tools.push(RuntimeTool {
                 id,
                 title: t.title.clone().unwrap_or_else(|| format!("{}: {}", p.display_name(), t.name)),
@@ -218,9 +259,9 @@ pub fn install(session: &mut Session) -> Vec<RuntimeTool> {
                 run: call_plugin,
             });
         }
-        plugins.servers.insert(p.id.clone(), (p.clone(), Mutex::new(None)));
+        catalog.servers.insert(p.id.clone(), p.clone());
     }
-    session.ext.insert(Arc::new(plugins));
+    session.ext.insert(Arc::new(Plugins::from_catalog(Arc::new(catalog))));
     crate::wasm_plugins::install(session, &mut tools);
     tools
 }
@@ -245,8 +286,9 @@ pub fn refresh(p: &McpPlugin, config: &std::path::Path) -> Result<Vec<RemoteTool
 /// call it, and record the result as evidence.
 fn call_plugin(ctx: &mut Ctx<'_>, params: Value) -> Result<ToolOutput, ToolError> {
     let plugins = ctx.session.ext.get::<Plugins>().ok_or_else(|| ToolError::internal("plugins aren't loaded in this session"))?;
-    let route = plugins.routes.get(ctx.tool).ok_or_else(|| ToolError::internal(format!("no plugin serves {}", ctx.tool)))?;
-    let (plugin, client) = plugins.servers.get(&route.server).ok_or_else(|| ToolError::internal(format!("plugin {} isn't loaded", route.server)))?;
+    let route = plugins.catalog.routes.get(ctx.tool).ok_or_else(|| ToolError::internal(format!("no plugin serves {}", ctx.tool)))?;
+    let plugin = plugins.catalog.servers.get(&route.server).ok_or_else(|| ToolError::internal(format!("plugin {} isn't loaded", route.server)))?;
+    let client = plugins.clients.get(&route.server).ok_or_else(|| ToolError::internal(format!("plugin {} has no client slot", route.server)))?;
     let mut slot = client.lock().unwrap_or_else(PoisonError::into_inner);
     if slot.is_none() {
         ctx.report(None, format!("Starting the {} plugin…", plugin.display_name()));
@@ -287,6 +329,66 @@ fn call_plugin(ctx: &mut Ctx<'_>, params: Value) -> Result<ToolOutput, ToolError
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn restored_run_services_route_calls_to_independent_clients() {
+        use crate::{CallOptions, Caller, CancelToken, Engine};
+
+        let script = r#"
+count=0
+while IFS= read -r line; do
+  case "$line" in
+    *'"method":"initialize"'*) result='{"protocolVersion":"2025-06-18","capabilities":{}}' ;;
+    *'"method":"tools/call"'*) count=$((count + 1)); result="{\"content\":[{\"type\":\"text\",\"text\":\"$$:$count\"}]}" ;;
+    *) continue ;;
+  esac
+  id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')
+  printf '{"jsonrpc":"2.0","id":%s,"result":%s}\n' "$id" "$result"
+done
+"#;
+        let mut source = crate::testing::session();
+        let mut config = plugin("/bin/sh");
+        config.args = vec!["-c".into(), script.into()];
+        config.consent = false;
+        let cache = config.cache_path(&source.config_dir());
+        std::fs::create_dir_all(cache.parent().unwrap()).unwrap();
+        std::fs::write(
+            &cache,
+            serde_json::to_vec(&vec![RemoteTool {
+                name: "echo".into(),
+                title: None,
+                description: None,
+                input_schema: json!({"type":"object"}),
+                annotations: json!({"readOnlyHint":true,"openWorldHint":false}),
+            }])
+            .unwrap(),
+        )
+        .unwrap();
+        source.settings.plugins.mcp.push(config);
+        let tools = install(&mut source);
+        let services = RunServices::capture(&source);
+        let engine = Engine::shared_with(source, Vec::new(), tools);
+        let mut first = crate::testing::session();
+        let mut second = crate::testing::session();
+        services.install(&mut first);
+        services.install(&mut second);
+        let first = engine.fork_session(first);
+        let second = engine.fork_session(second);
+        let call = |engine: &Engine| match engine.call("notes_echo", json!({}), CallOptions::new(Caller::Mcp)).unwrap() {
+            ToolOutput::Evidence(e) => e.summary.clone(),
+            other => panic!("expected evidence, got {other:?}"),
+        };
+        let first_answer = call(&first);
+        let second_answer = call(&second);
+        assert!(first_answer.ends_with(":1"));
+        assert!(second_answer.ends_with(":1"));
+        assert_ne!(first_answer, second_answer);
+        let cancel = CancelToken::default();
+        cancel.cancel();
+        assert_eq!(first.call("notes_echo", json!({}), CallOptions::new(Caller::Mcp).with_cancel(cancel)).unwrap_err().code, ErrorCode::Cancelled);
+        assert!(call(&second).ends_with(":2"));
+    }
 
     #[test]
     fn remote_names_become_our_ids_and_annotations_our_effects() {

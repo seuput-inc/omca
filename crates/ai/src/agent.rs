@@ -260,6 +260,8 @@ pub struct ModelSlot {
 /// Settings for one conversation.
 pub struct LoopConfig {
     pub beginner: bool,
+    /// Presentation language captured for this conversation; independent of other runs.
+    pub response_language: String,
     pub prices: BTreeMap<String, crate::config::Price>,
     /// Keep the conversation in this file after every step, and continue it when it's there in
     /// this same mode.
@@ -282,7 +284,16 @@ pub struct LoopConfig {
 impl Default for LoopConfig {
     /// Deep, so a conversation started without an explicit mode keeps the old, safe behavior.
     fn default() -> Self {
-        Self { beginner: false, prices: BTreeMap::new(), transcript: None, deep: true, context_tokens: 0, lean_for_local: false, logs: None }
+        Self {
+            beginner: false,
+            response_language: String::new(),
+            prices: BTreeMap::new(),
+            transcript: None,
+            deep: true,
+            context_tokens: 0,
+            lean_for_local: false,
+            logs: None,
+        }
     }
 }
 
@@ -428,7 +439,7 @@ impl AgentLoop {
             self.last_history_estimate = 0;
         }
         let inv = self.host.investigation();
-        self.system = Some(prompt::system_prompt(self.cfg.beginner, self.host.clean_room(), &inv, !lean));
+        self.system = Some(prompt::system_prompt(self.cfg.beginner, self.host.clean_room(), &inv, !lean, &self.cfg.response_language));
         self.system_lean = lean;
         if self.cfg.lean_for_local
             && let Some(slot) = self.chain.get(self.current)
@@ -959,10 +970,11 @@ impl ApiConversation {
     }
 
     /// [`ApiConversation::start`] with these toolsets enabled from the start.
-    pub fn start_with(host: Arc<dyn ToolHost>, chain: Vec<ModelSlot>, cfg: LoopConfig, enabled: BTreeSet<Toolset>) -> Result<ApiConversation, ToolError> {
+    pub fn start_with(host: Arc<dyn ToolHost>, chain: Vec<ModelSlot>, mut cfg: LoopConfig, enabled: BTreeSet<Toolset>) -> Result<ApiConversation, ToolError> {
         if chain.is_empty() {
             return Err(ToolError::unavailable("No AI backend could be started.").with_remediation("Add one in Settings → Models & accounts."));
         }
+        cfg.response_language = prompt::response_language(&cfg.response_language);
         let (etx, erx) = std::sync::mpsc::channel();
         let (wtx, wrx) = std::sync::mpsc::channel::<Option<String>>();
         let busy = Arc::new(AtomicBool::new(false));
@@ -1284,6 +1296,68 @@ pub(crate) mod tests {
             std::thread::sleep(Duration::from_millis(5));
         }
         panic!("timed out: {all:?}");
+    }
+
+    #[test]
+    fn response_language_is_independent_for_parallel_conversations_and_reapplied_on_resume() {
+        type RecordedRequests = Arc<Mutex<Vec<(String, Vec<Msg>)>>>;
+        struct Requests(RecordedRequests);
+        impl ChatModel for Requests {
+            fn turn(&mut self, req: &TurnRequest<'_>, _: &mut dyn FnMut(Delta), _: &Stop) -> Result<TurnResult, ToolError> {
+                self.0.lock().unwrap().push((req.system.into(), req.messages.to_vec()));
+                turn(vec![Block::Text { text: "Finished.".into() }], StopReason::EndTurn)
+            }
+            fn model(&self) -> String {
+                "scripted".into()
+            }
+        }
+        let root = tempfile::tempdir().unwrap();
+        let transcript = root.path().join("transcript.json");
+        let seen_ko = Arc::new(Mutex::default());
+        let seen_en = Arc::new(Mutex::default());
+        let start = |language: &str, transcript, seen| {
+            let host = Arc::new(FakeHost { calls: Mutex::default(), journal: Mutex::default() });
+            let slot = ModelSlot {
+                name: "Fake".into(),
+                model: Box::new(Requests(seen)),
+                local: false,
+                effort: None,
+                max_turns: 2,
+                context_tokens: 0,
+                tools: Default::default(),
+            };
+            ApiConversation::start(host, vec![slot], LoopConfig { response_language: language.into(), transcript, ..LoopConfig::default() }).unwrap()
+        };
+        let mut korean = start("ko", Some(transcript.clone()), seen_ko.clone());
+        let mut english = start("en", None, seen_en.clone());
+        let request = "Explain `cargo build` without changing app/main.rs.";
+        korean.send(request);
+        english.send(request);
+        drain_until_done(&mut korean, |_, _| {});
+        drain_until_done(&mut english, |_, _| {});
+        let follow_up = prompt::with_response_language("Explain the result.", "en");
+        korean.send(&follow_up);
+        drain_until_done(&mut korean, |_, _| {});
+        {
+            let ko = seen_ko.lock().unwrap();
+            let en = seen_en.lock().unwrap();
+            assert!(ko.iter().all(|(system, _)| system.starts_with("Response language: Korean (한국어).")));
+            assert!(en.iter().all(|(system, _)| system.starts_with("Response language: English.")));
+            assert_eq!(ko[0].1[0].text(), request, "the raw message and code are not translated");
+            assert!(ko[1].1.iter().any(|message| message.text() == request), "follow-ups keep the earlier request");
+            assert_eq!(ko[1].1.last().unwrap().text(), follow_up, "a language change is scoped to the next request, not the kept conversation");
+            assert!(ko[1].0.contains("current request overrides this conversation's earlier language default"));
+            assert!(ko[1].0.contains("takes precedence over both"));
+        }
+        drop(korean);
+        let resumed_seen = Arc::new(Mutex::default());
+        let mut resumed = start("en", Some(transcript), resumed_seen.clone());
+        assert!(resumed.resumed());
+        resumed.send("Continue.");
+        drain_until_done(&mut resumed, |_, _| {});
+        let resumed = resumed_seen.lock().unwrap();
+        assert!(resumed[0].0.starts_with("Response language: English."), "the current language wins over a saved Korean conversation");
+        assert!(resumed[0].1.iter().any(|message| message.text() == request));
     }
 
     #[test]

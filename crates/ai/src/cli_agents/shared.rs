@@ -42,7 +42,7 @@ impl SharedConversation {
                                 let _ = output.send(AgentEvent::Status { text: "Preparing the shared investigation...".into() });
                                 match prepare(&engine, &keys, &entry, beginner) {
                                     Ok(mut spec) => {
-                                        let next = json!({"project": spec.project, "targets": spec.targets, "deep": spec.deep, "options": spec.options});
+                                        let next = json!({"project": spec.project, "targets": spec.targets, "deep": spec.deep, "options": spec.options, "language": spec.response_language});
                                         if context.as_ref() != Some(&next) {
                                             if continues(context.as_ref(), &next) {
                                                 spec.resume = conversation.as_ref().and_then(|conversation| conversation.session_id());
@@ -143,6 +143,7 @@ fn prepare(engine: &Engine, keys: &crate::KeyStore, entry: &BackendEntry, beginn
     serde_json::to_value(&targets).map_err(|error| ToolError::invalid(format!("Couldn't share the target metadata: {error}")))?;
     let mut spec = CliSpec::new(entry.config.clone(), entry.options.clone(), beginner, Some(project));
     spec.targets = targets;
+    spec.response_language = crate::prompt::response_language(&session.settings.language);
     spec.deep = !session.clean_room();
     spec.logs = Some(crate::failure_log::dir_in(&session.config_dir()));
     spec.key = acp::key_for(keys, &spec.config.model, &spec.config.name, spec.config.kind);

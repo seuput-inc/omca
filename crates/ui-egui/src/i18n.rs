@@ -6,8 +6,9 @@
 //! Supported: English (built in) and Korean (`i18n/ko.tsv`). Adding a language: put `xx.tsv` in
 //! `i18n/`, add one row to [`LANGUAGES`] and its code to `xtask/src/i18n_coverage.rs`.
 
-use std::collections::HashMap;
-use std::sync::{OnceLock, RwLock};
+use std::borrow::Cow;
+use std::collections::{HashMap, HashSet};
+use std::sync::{LazyLock, OnceLock, RwLock};
 
 /// One supported UI language.
 pub struct LangInfo {
@@ -82,6 +83,22 @@ pub fn tr(s: &str) -> String {
     }
 }
 
+/// Translate only registered presentation text. Unknown subprocess status remains raw detail,
+/// rather than being mistaken for app copy just because it happens to be English.
+pub fn tr_known(s: &str) -> Option<String> {
+    static KEYS: LazyLock<HashSet<Cow<'static, str>>> = LazyLock::new(|| {
+        LANGUAGES
+            .iter()
+            .flat_map(|lang| lang.source.lines())
+            .filter(|line| !line.trim_start().starts_with('#'))
+            .filter_map(|line| line.split_once('\t'))
+            .filter(|(key, value)| !key.is_empty() && !value.trim().is_empty())
+            .map(|(key, _)| if key.contains("\\n") { Cow::Owned(key.replace("\\n", "\n")) } else { Cow::Borrowed(key) })
+            .collect()
+    });
+    KEYS.contains(s).then(|| tr(s))
+}
+
 /// Translate, then fill `{name}` placeholders.
 pub fn trf(s: &str, args: &[(&str, &str)]) -> String {
     let mut out = tr(s);
@@ -116,6 +133,13 @@ mod tests {
         assert_eq!(preferred_language(["en-US", "ko-KR"]), "en");
         assert_eq!(preferred_language(["zh-CN"]), "en");
         assert_eq!(preferred_language(std::iter::empty::<&str>()), "en");
+    }
+
+    #[test]
+    fn known_copy_is_distinct_from_raw_diagnostics_in_every_language() {
+        assert_eq!(tr_known("Stopped."), Some(tr("Stopped.")));
+        assert_eq!(tr_known("Reading the investigation so far…"), Some(tr("Reading the investigation so far…")));
+        assert_eq!(tr_known("an-agent: provider debug status 123"), None);
     }
 
     /// The Korean catalogue parses cleanly: one key and one translation per line, no duplicates,

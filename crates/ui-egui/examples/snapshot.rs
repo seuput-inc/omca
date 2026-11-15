@@ -58,6 +58,10 @@ fn render(out: &std::path::Path, name: &str, w: f32, h: f32, scale: f32, make: i
             }
         }
         "providers-detail" => {}
+        "recovery-details" => {
+            harness.get_by_label(&craft_anything_ui_egui::i18n::tr("Error details")).click();
+            harness.run_steps(3);
+        }
         _ => {}
     }
     match harness.render() {
@@ -121,6 +125,26 @@ fn main() {
             demo::fill_ask(&mut a);
             a
         });
+    }
+    for scene in ["recovery-answer", "recovery-build", "recovery-details"] {
+        if want(scene) {
+            render(&out, scene, w, h, scale, move || {
+                let mut a = demo::app(demo::engine(Mode::Beginner, true));
+                demo::composer_scene(&mut a, false);
+                let message = "Example provider rejected the selected model.".to_string();
+                let remediation = Some("Check Models & accounts, then choose an available model. Your draft is kept.".to_string());
+                if scene == "recovery-build" {
+                    demo::fill_project(&mut a);
+                    a.state.feed = vec![craft_anything_ui_egui::state::FeedItem::Error { message, remediation, log: None }];
+                    if let Some(ws) = a.workspace.as_mut() {
+                        ws.manifest.status = craft_anything_engine::workspace::Status::NeedsYou;
+                    }
+                } else {
+                    a.state.chat = vec![craft_anything_ui_egui::state::ChatItem::Error { message, remediation, log: None }];
+                }
+                a
+            });
+        }
     }
     if want("ask-working") {
         render(&out, "ask-working", w, h, scale, || {
@@ -425,6 +449,9 @@ fn main() {
                 a.backends.clear();
                 a.detected = Some(Vec::new());
                 demo::provider_accounts(&mut a);
+                if scene == "providers-empty" {
+                    demo::provider_account_scene(&mut a, "empty");
+                }
                 a
             });
         }

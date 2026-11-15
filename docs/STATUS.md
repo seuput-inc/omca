@@ -6,6 +6,22 @@ workspace clippy, layers, fmt and the secret scan of all history were clean. Chi
 
 ## What works, and how it was checked
 
+### OMCA 0.4.5 release work
+
+This fork uses only accounts connected directly in OMCA. The historical upstream CLI discovery
+sections below do not describe the OMCA desktop credential policy.
+
+| Area | Implementation and verification |
+|---|---|
+| Settings and recovery | Model readiness, connected accounts, empty/loading/error states, actionable failures, and expandable original diagnostics. Native accessibility interactions and Korean offscreen rendering passed. Packaged installation verification remains a release gate. |
+| Signed app updates | Pinned Ed25519 manifests, verified downloads, same-install restart, macOS atomic exchange/rollback, Windows MSI and portable recovery. Six platform and eleven update-UI tests passed. A real macOS fixture updated 0.4.5 to 0.4.6 and preserved synthetic credentials. Windows native and published-download checks remain release gates. |
+| Concurrent projects | Project-scoped engines, tool services, settings, cancellation, and language. Overlapping tool execution and scoped writes passed. Independent review corrections passed MCP/WASM service, alias, settings transaction, shared-hub, deferred replay, and interrupted-commit regressions. The corrected source passed independent review. |
+| Project folders | One common parent, a project name, automatic exclusive child creation, and existing-project opening. Collision and UI draft regressions passed; the Korean destination preview was rendered at 1440 × 1200. |
+| System language | Request-local language and explicit app override; original code and diagnostics are retained. Request-language, private-toolchain child-process, and five UI i18n tests passed. The Korean recovery screen was rendered and inspected. |
+| Game engines | Actual Godot 4.7.2 and private Rust 1.100.0 installs executed successfully; Rust also built an offline sample. Unity uses the official CLI and explicit account/license actions; full editor installation and legal acceptance were not performed. Unreal uses the official launcher and explicit completion confirmation. Windows private Unity-profile verification is a release gate. |
+| Window controls | The mode switch is visible in both modes. Seven pointer/status/consent regressions passed, and Korean Simple/Advanced snapshots were inspected. Native Windows pointer dragging has not been observed on this Mac; Windows command-level regressions are a release gate. |
+
+
 ### Local Codex discovery and sign-in (R2.2)
 
 macOS Dock launches can find an executable Codex CLI bundled with ChatGPT.app or

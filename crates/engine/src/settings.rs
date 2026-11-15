@@ -6,6 +6,8 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+static SETTINGS_WRITE_LOCK: craft_anything_platform::sync::Mutex<()> = craft_anything_platform::sync::Mutex::new(());
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum Mode {
@@ -139,6 +141,125 @@ pub struct Settings {
     /// saved, so code that rebuilds settings from their saved form carries it over.
     #[serde(skip)]
     pub not_loaded: Option<String>,
+}
+
+/// Changes to persisted settings, relative to a UI snapshot.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SettingsPatch {
+    changes: Vec<(Vec<String>, PatchValue)>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+enum PatchValue {
+    Set(serde_json::Value),
+    Remove,
+}
+
+#[derive(Serialize, Deserialize)]
+struct DeferredSettingsEdits {
+    version: u32,
+    patch: SettingsPatch,
+}
+
+impl SettingsPatch {
+    pub fn between(base: &Settings, edited: &Settings) -> Result<Self, ToolError> {
+        fn collect(base: &serde_json::Value, edited: &serde_json::Value, path: &mut Vec<String>, changes: &mut Vec<(Vec<String>, PatchValue)>) {
+            if let (Some(old), Some(new)) = (base.as_object(), edited.as_object()) {
+                for (key, value) in old {
+                    path.push(key.clone());
+                    match new.get(key) {
+                        Some(next) => collect(value, next, path, changes),
+                        None if value.as_object().is_some_and(|v| !v.is_empty()) => {
+                            collect(value, &serde_json::json!({}), path, changes);
+                        }
+                        None => changes.push((path.clone(), PatchValue::Remove)),
+                    }
+                    path.pop();
+                }
+                for (key, value) in new {
+                    if !old.contains_key(key) {
+                        path.push(key.clone());
+                        if value.as_object().is_some_and(|v| !v.is_empty()) {
+                            collect(&serde_json::json!({}), value, path, changes);
+                        } else {
+                            changes.push((path.clone(), PatchValue::Set(value.clone())));
+                        }
+                        path.pop();
+                    }
+                }
+            } else if base != edited {
+                changes.push((path.clone(), PatchValue::Set(edited.clone())));
+            }
+        }
+
+        let base = serde_json::to_value(base).map_err(|e| ToolError::new(ErrorCode::BadSettings, e.to_string()))?;
+        let edited = serde_json::to_value(edited).map_err(|e| ToolError::new(ErrorCode::BadSettings, e.to_string()))?;
+        let mut patch = Self::default();
+        collect(&base, &edited, &mut Vec::new(), &mut patch.changes);
+        Ok(patch)
+    }
+
+    pub fn merge(&mut self, new: Self) {
+        self.changes.extend(new.changes);
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.changes.is_empty()
+    }
+
+    pub fn apply(&self, settings: &mut Settings) -> Result<(), ToolError> {
+        let mut doc = serde_json::to_value(&*settings).map_err(|e| ToolError::new(ErrorCode::BadSettings, e.to_string()))?;
+        for (path, value) in &self.changes {
+            let Some((last, parents)) = path.split_last() else {
+                return Err(ToolError::new(ErrorCode::BadSettings, "Settings patch has an empty path."));
+            };
+            let mut cursor = &mut doc;
+            for key in parents {
+                if !cursor.is_object() {
+                    *cursor = serde_json::json!({});
+                }
+                let object = cursor.as_object_mut().ok_or_else(|| ToolError::new(ErrorCode::BadSettings, "Settings patch parent is not an object."))?;
+                cursor = object.entry(key.clone()).or_insert_with(|| serde_json::json!({}));
+            }
+            let object = cursor.as_object_mut().ok_or_else(|| ToolError::new(ErrorCode::BadSettings, "Settings patch parent is not an object."))?;
+            match value {
+                PatchValue::Set(value) => {
+                    object.insert(last.clone(), value.clone());
+                }
+                PatchValue::Remove => {
+                    object.remove(last);
+                }
+            }
+        }
+        let mut updated: Settings = serde_json::from_value(doc).map_err(|e| ToolError::new(ErrorCode::BadSettings, e.to_string()))?;
+        updated.engines.only_configured = settings.engines.only_configured;
+        updated.not_loaded.clone_from(&settings.not_loaded);
+        *settings = updated;
+        Ok(())
+    }
+
+    pub fn defer_to(&self, path: &Path) -> Result<(), ToolError> {
+        let _guard = SETTINGS_WRITE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let edits_path = path.with_extension("edits.json");
+        let mut pending = Self::read_deferred(&edits_path)?.unwrap_or_default();
+        pending.merge(self.clone());
+        let text =
+            serde_json::to_vec(&DeferredSettingsEdits { version: 1, patch: pending }).map_err(|e| ToolError::new(ErrorCode::BadSettings, e.to_string()))?;
+        crate::project::write_atomic(&edits_path, &text)
+    }
+
+    fn read_deferred(path: &Path) -> Result<Option<Self>, ToolError> {
+        let text = match std::fs::read(path) {
+            Ok(text) => text,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(ToolError::io(path.display(), e)),
+        };
+        let edits: DeferredSettingsEdits = serde_json::from_slice(&text).map_err(|e| ToolError::new(ErrorCode::BadSettings, e.to_string()))?;
+        if edits.version != 1 {
+            return Err(ToolError::new(ErrorCode::BadSettings, "Unsupported deferred settings edits version."));
+        }
+        Ok(Some(edits.patch))
+    }
 }
 
 /// How builds are checked and when refining stops.
@@ -429,6 +550,8 @@ impl Settings {
         }
         if let Err(e) = Self::recover_pending(path) {
             log::warn!("Couldn't recover pending settings: {}", e.message);
+        } else if let Err(e) = Self::recover_edits(path) {
+            log::warn!("Couldn't recover deferred settings edits: {}", e.message);
         }
         Settings::from_read(path, read_waiting(path, waits, read_file))
     }
@@ -476,7 +599,65 @@ impl Settings {
         Self::discard_pending(path)
     }
 
+    fn recover_edits(path: &Path) -> Result<(), ToolError> {
+        let _guard = SETTINGS_WRITE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let edits_path = path.with_extension("edits.json");
+        if SettingsPatch::read_deferred(&edits_path)?.is_some() {
+            Settings::default().update_to_unlocked(path, |_| Ok(()))?;
+        }
+        Ok(())
+    }
+
     pub fn save_to(&self, path: &Path) -> Result<(), ToolError> {
+        let _guard = SETTINGS_WRITE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        self.save_to_unlocked(path)
+    }
+
+    pub fn update_to(&self, path: &Path, update: impl FnOnce(&mut Settings) -> Result<(), ToolError>) -> Result<Settings, ToolError> {
+        let _guard = SETTINGS_WRITE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        self.update_to_unlocked(path, update)
+    }
+
+    fn update_to_unlocked(&self, path: &Path, update: impl FnOnce(&mut Settings) -> Result<(), ToolError>) -> Result<Settings, ToolError> {
+        if let Some(why) = &self.not_loaded {
+            return Err(ToolError::new(ErrorCode::BadSettings, format!("Settings weren't loaded: {why}")));
+        }
+        let mut current = match std::fs::read_to_string(path) {
+            Ok(text) => read_settings(&text).map_err(|e| ToolError::new(ErrorCode::BadSettings, e))?,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => self.clone(),
+            Err(e) => return Err(ToolError::io(path.display(), e)),
+        };
+        if current.version > SETTINGS_VERSION {
+            return Err(ToolError::new(ErrorCode::BadSettings, "Settings were written by a newer OMCA. Nothing was written."));
+        }
+        current.engines.only_configured = self.engines.only_configured;
+        current.not_loaded.clone_from(&self.not_loaded);
+        let edits_path = path.with_extension("edits.json");
+        let pending = SettingsPatch::read_deferred(&edits_path)?;
+        if let Some(patch) = &pending {
+            patch.apply(&mut current)?;
+        }
+        let before_update = pending.as_ref().map(|_| current.clone());
+        update(&mut current)?;
+        let has_pending = pending.is_some();
+        if let (Some(mut replay), Some(before)) = (pending, before_update) {
+            replay.merge(SettingsPatch::between(&before, &current)?);
+            let bytes =
+                serde_json::to_vec(&DeferredSettingsEdits { version: 1, patch: replay }).map_err(|e| ToolError::new(ErrorCode::BadSettings, e.to_string()))?;
+            crate::project::write_atomic(&edits_path, &bytes)?;
+        }
+        current.save_to_unlocked(path)?;
+        if has_pending {
+            #[cfg(test)]
+            if tests::FAIL_AFTER_SETTINGS_COMMIT.with(|fail| fail.replace(false)) {
+                return Err(ToolError::io(path.display(), std::io::Error::other("Injected interruption after settings commit")));
+            }
+            std::fs::remove_file(&edits_path).map_err(|e| ToolError::io(edits_path.display(), e))?;
+        }
+        Ok(current)
+    }
+
+    fn save_to_unlocked(&self, path: &Path) -> Result<(), ToolError> {
         if let Some(why) = &self.not_loaded {
             return Err(ToolError::new(ErrorCode::BadSettings, format!("Settings weren't saved: {why}, so these are defaults standing in for it."))
                 .with_remediation("Nothing was written. Make that file readable or move it aside, then start OMCA again."));
@@ -585,6 +766,164 @@ auto_mode = true
     }
 
     use super::*;
+
+    thread_local! {
+        pub(super) static FAIL_AFTER_SETTINGS_COMMIT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    }
+
+    #[test]
+    fn deferred_edits_keep_the_latest_change_after_commit_cleanup_interruption() {
+        use crate::{CallOptions, Caller, Engine};
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let sidecar = path.with_extension("edits.json");
+        let base = Settings::default();
+        base.save_to(&path).unwrap();
+        let mut old = base.clone();
+        old.language = "ko".into();
+        old.build.max_rounds = 17;
+        SettingsPatch::between(&base, &old).unwrap().defer_to(&path).unwrap();
+        let engine = Engine::new(crate::Session::isolated(dir.path()));
+        FAIL_AFTER_SETTINGS_COMMIT.with(|fail| fail.set(true));
+        let interrupted = engine.call("settings_set", serde_json::json!({"key":"language","value":"en"}), CallOptions::new(Caller::Cli));
+        assert!(interrupted.is_err(), "the failure occurs after commit but before sidecar cleanup");
+        assert_eq!(Settings::load_from(&path).language, "en");
+        assert!(sidecar.is_file(), "the interruption leaves replay data behind");
+        let restarted = Settings::load_waiting(&path, &[], &mut |p| std::fs::read(p));
+        assert_eq!(restarted.language, "en", "replay must not restore the obsolete ko edit");
+        assert_eq!(restarted.build.max_rounds, 17);
+        assert!(!sidecar.exists());
+    }
+
+    #[test]
+    fn settings_patch_ui_deltas_preserve_unrelated_changes() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let base = Settings::default();
+        base.save_to(&path).unwrap();
+        let mut edited = base.clone();
+        edited.build.max_rounds = 12;
+        let mut patch = SettingsPatch::between(&base, &edited).unwrap();
+        assert!(!patch.is_empty());
+        let mut next = edited.clone();
+        next.build.max_rounds = 14;
+        next.theme = "synthetic".into();
+        patch.merge(SettingsPatch::between(&edited, &next).unwrap());
+        let mut external = base.clone();
+        external.language = "ko".into();
+        external.ai.insert("model".into(), toml::Value::String("synthetic-model".into()));
+        external.save_to(&path).unwrap();
+        let saved = base.update_to(&path, |current| patch.apply(current)).unwrap();
+        assert_eq!(saved.language, "ko");
+        assert_eq!(saved.ai.get("model"), Some(&toml::Value::String("synthetic-model".into())));
+        assert_eq!(saved.build.max_rounds, 14);
+        assert_eq!(saved.theme, "synthetic");
+        assert_eq!(Settings::load_from(&path), saved);
+        assert!(SettingsPatch::between(&saved, &saved).unwrap().is_empty());
+    }
+
+    #[test]
+    fn settings_patch_concurrent_updates_preserve_distinct_fields() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let base = Settings::default();
+        base.save_to(&path).unwrap();
+        let mut a = base.clone();
+        a.language = "ko".into();
+        let mut b = base.clone();
+        b.build.max_rounds = 17;
+        let patches = [SettingsPatch::between(&base, &a).unwrap(), SettingsPatch::between(&base, &b).unwrap()];
+        let barrier = std::sync::Barrier::new(2);
+        std::thread::scope(|scope| {
+            for patch in patches {
+                let base = &base;
+                let path = &path;
+                let barrier = &barrier;
+                scope.spawn(move || {
+                    barrier.wait();
+                    base.update_to(path, |current| patch.apply(current)).unwrap();
+                });
+            }
+        });
+        let saved = Settings::load_from(&path);
+        assert_eq!(saved.language, "ko");
+        assert_eq!(saved.build.max_rounds, 17);
+    }
+
+    #[test]
+    fn settings_patch_keeps_runtime_state() {
+        let base = Settings::default();
+        let mut edited = base.clone();
+        edited.language = "ko".into();
+        let patch = SettingsPatch::between(&base, &edited).unwrap();
+        let mut current = base;
+        current.engines.only_configured = true;
+        current.not_loaded = Some("synthetic error".into());
+        patch.apply(&mut current).unwrap();
+        assert_eq!(current.language, "ko");
+        assert!(current.engines.only_configured);
+        assert_eq!(current.not_loaded.as_deref(), Some("synthetic error"));
+    }
+
+    #[test]
+    fn settings_patch_deferred_recovery_preserves_latest_settings_and_retains_on_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let sidecar = path.with_extension("edits.json");
+        let base = Settings::default();
+        let mut edited = base.clone();
+        edited.build.max_rounds = 11;
+        let patch = SettingsPatch::between(&base, &edited).unwrap();
+        patch.defer_to(&path).unwrap();
+        let mut later = edited.clone();
+        later.theme = "synthetic".into();
+        SettingsPatch::between(&edited, &later).unwrap().defer_to(&path).unwrap();
+        let future = "version = 999\nlanguage = 'future'\n";
+        std::fs::write(&path, future).unwrap();
+        let _ = Settings::load_waiting(&path, &[], &mut |p| std::fs::read(p));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), future);
+        assert!(sidecar.exists());
+        let mut current = base;
+        current.language = "ko".into();
+        current.ai.insert("model".into(), toml::Value::String("synthetic-model".into()));
+        current.save_to(&path).unwrap();
+        let recovered = Settings::load_waiting(&path, &[], &mut |p| std::fs::read(p));
+        assert_eq!(recovered.language, "ko");
+        assert_eq!(recovered.ai, current.ai);
+        assert_eq!(recovered.build.max_rounds, 11);
+        assert_eq!(recovered.theme, "synthetic");
+        assert!(!sidecar.exists());
+    }
+
+    #[test]
+    fn deferred_edits_do_not_replay_after_a_newer_successful_write() {
+        use crate::{CallOptions, Caller, Engine};
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let sidecar = path.with_extension("edits.json");
+        let base = Settings::default();
+        let mut deferred = base.clone();
+        deferred.language = "ko".into();
+        deferred.build.max_rounds = 17;
+        SettingsPatch::between(&base, &deferred).unwrap().defer_to(&path).unwrap();
+
+        std::fs::write(&path, "version = 999\nlanguage = 'future'\n").unwrap();
+        let _ = Settings::load_waiting(&path, &[], &mut |p| std::fs::read(p));
+        assert!(sidecar.exists());
+        base.save_to(&path).unwrap();
+
+        let engine = Engine::new(crate::Session::isolated(dir.path()));
+        engine.call("settings_set", serde_json::json!({"key": "language", "value": "en"}), CallOptions::new(Caller::Cli)).unwrap();
+        let saved = Settings::load_from(&path);
+        assert_eq!(saved.language, "en");
+        assert_eq!(saved.build.max_rounds, 17);
+        assert!(!sidecar.exists());
+
+        let restarted = Settings::load_waiting(&path, &[], &mut |p| std::fs::read(p));
+        assert_eq!(restarted.language, "en");
+        assert_eq!(restarted.build.max_rounds, 17);
+    }
 
     #[test]
     fn only_configured_finds_no_engine_from_this_computer_but_keeps_the_ones_set() {

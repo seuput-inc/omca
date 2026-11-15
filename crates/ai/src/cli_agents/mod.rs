@@ -594,12 +594,16 @@ pub struct CliSpec {
     pub config: BackendConfig,
     pub options: BackendOptions,
     pub beginner: bool,
+    /// Presentation language for this conversation, also reapplied to resumed turns.
+    pub response_language: String,
     /// The working folder (and, without `builder`, the investigation handed to our MCP server).
     pub project: Option<PathBuf>,
     /// The desktop's open targets, active last; the MCP child restores them before serving.
     pub targets: Vec<craft_anything_engine::target::TargetContext>,
     /// Build mode: the agent may edit files in the working folder.
     pub builder: Option<Builder>,
+    /// App-managed toolchain environment for a local builder only; never forwarded over SSH.
+    pub toolchain_env: Vec<(String, std::ffi::OsString)>,
     /// A saved agent session to continue.
     pub resume: Option<String>,
     /// Deep mode: our MCP server runs in it, and a builder sees every tool and may read files
@@ -660,9 +664,11 @@ impl CliSpec {
             config,
             options,
             beginner,
+            response_language: crate::prompt::response_language(""),
             project,
             targets: Vec::new(),
             builder: None,
+            toolchain_env: Vec::new(),
             resume: None,
             deep: false,
             preamble: None,
@@ -723,7 +729,10 @@ fn acp_for(spec: &CliSpec) -> Option<AcpConversation> {
         args.extend(adapter.acp_mcp_options(&mcp));
     }
     args.extend(adapter.acp_trailing().iter().map(|word| (*word).to_string()));
-    let preamble = spec.preamble.clone().unwrap_or_else(|| crate::prompt::cli_preamble(spec.beginner));
+    let preamble = match &spec.preamble {
+        Some(p) => crate::prompt::with_response_language(p, &spec.response_language),
+        None => crate::prompt::cli_preamble(spec.beginner, &spec.response_language),
+    };
     let session_config = adapter.acp_session_config(&spec.options);
     let auth = acp::key_auth_method(&agent).map(str::to_string).zip(spec.key.clone());
     Some(
@@ -735,6 +744,7 @@ fn acp_for(spec: &CliSpec) -> Option<AcpConversation> {
             .with_session_config(session_config)
             .with_preamble(preamble)
             .with_logs(spec.logs.clone())
+            .with_toolchain_env(spec.toolchain_env.clone())
             .with_auth(auth),
     )
 }
@@ -999,7 +1009,10 @@ fn run_cli(spec: &CliSpec, text: &str, retry: bool, tx: &Sender<AgentEvent>, sto
             let _ = tx.send(AgentEvent::Status { text: format!("Couldn't confirm that {program} has {}; trying it anyway.", needed.join(" / ")) });
         }
     }
-    let preamble = spec.preamble.clone().unwrap_or_else(|| crate::prompt::cli_preamble(spec.beginner));
+    let preamble = match &spec.preamble {
+        Some(p) => crate::prompt::with_response_language(p, &spec.response_language),
+        None => crate::prompt::cli_preamble(spec.beginner, &spec.response_language),
+    };
     let mut mcp = mcp_for(spec, remote.is_some());
     if let Some(path) = remote.as_deref().and_then(adapters::remote_cli_path) {
         mcp.command = path;
@@ -1080,6 +1093,11 @@ fn run_cli(spec: &CliSpec, text: &str, retry: bool, tx: &Sender<AgentEvent>, sto
         .idle_timeout(Duration::from_secs(quiet));
     for (k, v) in &env {
         proc = proc.env(k, v.as_str());
+    }
+    if remote.is_none() {
+        for (key, value) in &spec.toolchain_env {
+            proc = proc.env(key, value);
+        }
     }
     let mut proc = proc
         .stdout_cap(4 * 1024 * 1024)
@@ -1793,6 +1811,90 @@ mod tests {
         std::io::Write::flush(&mut std::io::stdout()).unwrap();
         if how == "hang" {
             std::thread::sleep(Duration::from_secs(60));
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn private_rust_toolchain_is_inherited_by_cli_and_acp_children_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let store = dir.path().join("engines");
+        let root = store.join("rust/1.2.3");
+        let cargo_home = root.join("cargo");
+        let rustup_home = root.join("rustup");
+        let bin = cargo_home.join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::create_dir_all(&rustup_home).unwrap();
+        let cargo = bin.join("cargo");
+        std::fs::write(&cargo, "#!/bin/sh\nprintf 'private-cargo-test\\n'\n").unwrap();
+        std::fs::set_permissions(&cargo, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::write(bin.join("rustc"), b"").unwrap();
+        std::fs::write(rustup_home.join("settings.toml"), b"").unwrap();
+        let before = ["CARGO_HOME", "RUSTUP_HOME", "PATH"].map(std::env::var_os);
+        let environment = craft_anything_engines::game::rust_environment(&store).unwrap();
+        let capture = "printf '%s\\n' \"$CARGO_HOME\" \"$RUSTUP_HOME\" \"$PATH\" \"$(command -v cargo)\" \"$(cargo --version)\" > \"$1\"\n";
+        let acp_protocol = r#"IFS= read -r init
+printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{}}'
+IFS= read -r session
+printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{"sessionId":"fixture"}}'
+IFS= read -r prompt
+printf '%s\n' '{"jsonrpc":"2.0","id":3,"result":{"stopReason":"end_turn"}}'
+IFS= read -r finished
+"#;
+        for acp in [false, true] {
+            let output = dir.path().join(if acp { "acp-env" } else { "cli-env" });
+            let script = format!("{capture}{}", if acp { acp_protocol } else { "" });
+            let args = vec!["-c".into(), script, "fixture".into(), output.display().to_string()];
+            let mut conversation: Box<dyn Conversation> = if acp {
+                Box::new(
+                    AcpConversation::new(
+                        "Fixture",
+                        "fixture",
+                        "/bin/sh".into(),
+                        args,
+                        dir.path().into(),
+                        McpCommand { command: "fixture".into(), args: Vec::new(), notes: None },
+                        None,
+                    )
+                    .with_toolchain_env(environment.clone()),
+                )
+            } else {
+                let config = BackendConfig {
+                    name: "Fixture".into(),
+                    kind: crate::BackendKind::AgentCli,
+                    model: "fixture".into(),
+                    base_url: None,
+                    ssh_host: None,
+                    enabled: true,
+                };
+                let options = BackendOptions { command: Some("/bin/sh".into()), args, ..Default::default() };
+                let mut spec = CliSpec::new(config, options, false, Some(dir.path().into()));
+                spec.deep = true;
+                spec.toolchain_env = environment.clone();
+                Box::new(CliConversation::new(spec))
+            };
+            conversation.send("Inspect the fixture.");
+            let deadline = std::time::Instant::now() + Duration::from_secs(10);
+            let mut events = Vec::new();
+            while !events.iter().any(|event| matches!(event, AgentEvent::TurnDone { .. })) {
+                assert!(std::time::Instant::now() < deadline, "acp={acp}: {events:?}");
+                events.extend(conversation.poll());
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            assert!(!events.iter().any(|event| matches!(event, AgentEvent::Error { .. })), "acp={acp}: {events:?}");
+            drop(conversation);
+            let captured = std::fs::read_to_string(output).unwrap();
+            let lines: Vec<_> = captured.lines().collect();
+            assert_eq!(Path::new(lines[0]), cargo_home);
+            assert_eq!(Path::new(lines[1]), rustup_home);
+            let child_path: Vec<_> = std::env::split_paths(OsStr::new(lines[2])).collect();
+            assert_eq!(child_path.first(), Some(&bin));
+            let inherited_path: Vec<_> = before[2].as_ref().map(|path| std::env::split_paths(path).collect()).unwrap_or_default();
+            assert_eq!(&child_path[1..], inherited_path, "the original search order stays after private cargo");
+            assert_eq!(Path::new(lines[3]), cargo);
+            assert_eq!(lines[4], "private-cargo-test", "the child's cargo command executes the app-private program");
+            assert_eq!(["CARGO_HOME", "RUSTUP_HOME", "PATH"].map(std::env::var_os), before, "the host environment never changes");
         }
     }
 

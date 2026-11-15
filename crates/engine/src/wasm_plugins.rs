@@ -90,6 +90,43 @@ impl PluginCheck {
 #[derive(Default)]
 struct PluginChecks(Vec<std::sync::Arc<PluginCheck>>);
 
+#[derive(Clone, Default)]
+pub(crate) struct RunServices {
+    checks: Option<std::sync::Arc<PluginChecks>>,
+    #[cfg(feature = "wasm-plugins")]
+    routes: Option<std::sync::Arc<imp::WasmRoutes>>,
+}
+
+impl std::fmt::Debug for RunServices {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WasmRunServices").field("checks", &self.checks.is_some()).finish_non_exhaustive()
+    }
+}
+
+impl RunServices {
+    pub(crate) fn capture(session: &Session) -> Self {
+        Self {
+            checks: session.ext.get::<PluginChecks>(),
+            #[cfg(feature = "wasm-plugins")]
+            routes: session.ext.get::<imp::WasmRoutes>(),
+        }
+    }
+
+    pub(crate) fn install(&self, session: &mut Session) {
+        if let Some(checks) = &self.checks {
+            session.ext.insert(checks.clone());
+        } else {
+            session.ext.remove::<PluginChecks>();
+        }
+        #[cfg(feature = "wasm-plugins")]
+        if let Some(routes) = &self.routes {
+            session.ext.insert(routes.clone());
+        } else {
+            session.ext.remove::<imp::WasmRoutes>();
+        }
+    }
+}
+
 /// The checks the session's WASM plugins offer (none without the `wasm-plugins` feature).
 pub fn checks(session: &Session) -> Vec<std::sync::Arc<PluginCheck>> {
     session.ext.get::<PluginChecks>().map(|c| c.0.clone()).unwrap_or_default()
@@ -133,7 +170,7 @@ mod imp {
 
     /// Which plugin and tool name serve each tool id.
     #[derive(Default)]
-    struct WasmRoutes(HashMap<&'static str, (Arc<WasmPlugin>, String)>);
+    pub(super) struct WasmRoutes(HashMap<&'static str, (Arc<WasmPlugin>, String)>);
 
     pub fn install(session: &mut Session, configs: Vec<WasmPluginConfig>, tools: &mut Vec<RuntimeTool>) {
         let mut routes = WasmRoutes::default();
@@ -220,6 +257,31 @@ mod tests {
     use crate::tool::ToolOutput;
     use crate::{CallOptions, Caller, Engine};
     use serde_json::json;
+
+    #[test]
+    fn restored_run_services_execute_wasm_tools_and_checks() {
+        let dir = tempfile::tempdir().unwrap();
+        let echo = dir.path().join("echo.wat");
+        let judge = dir.path().join("judge.wat");
+        std::fs::write(&echo, craft_anything_testkit::wasm_plugin::echo_plugin_wat(false)).unwrap();
+        std::fs::write(&judge, craft_anything_testkit::wasm_plugin::check_plugin_wat(true)).unwrap();
+        let mut source = crate::testing::session();
+        source.settings.plugins.wasm = vec![
+            WasmPluginConfig { id: "wordtools".into(), name: None, path: echo, enabled: true },
+            WasmPluginConfig { id: "judge".into(), name: None, path: judge, enabled: true },
+        ];
+        let tools = crate::plugins::install(&mut source);
+        let services = crate::plugins::RunServices::capture(&source);
+        let engine = Engine::shared_with(source, Vec::new(), tools);
+        let mut restored = crate::testing::session();
+        services.install(&mut restored);
+        let found = checks(&restored);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].run(&json!({"files": []})).unwrap()["passed"], true);
+        let fork = engine.fork_session(restored);
+        let out = fork.call("wordtools_echo", json!({"text": "hi"}), CallOptions::new(Caller::Mcp)).unwrap();
+        assert!(matches!(out, ToolOutput::Value(v) if v == json!({"text": "hi"})));
+    }
 
     #[test]
     fn a_configured_plugin_adds_tools_that_run_without_asking() {

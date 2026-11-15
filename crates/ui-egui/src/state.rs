@@ -32,6 +32,9 @@ pub struct MakeDraft {
     /// The address being typed for a website target.
     pub url: String,
     pub request: String,
+    /// The new project's display name; empty uses the request's suggested name.
+    #[serde(default)]
+    pub name: String,
     /// The website field is open.
     pub editing_url: bool,
     /// Pictures of the original to match (copied into the project when it starts).
@@ -85,6 +88,7 @@ impl Default for MakeDraft {
             target: TargetRef::None,
             url: String::new(),
             request: String::new(),
+            name: String::new(),
             editing_url: false,
             pictures: Vec::new(),
             found: None,

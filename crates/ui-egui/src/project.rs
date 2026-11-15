@@ -63,6 +63,12 @@ impl CraftApp {
         if request.is_empty() {
             return;
         }
+        if draft.folder.is_none()
+            && let Some(problem) = craft_anything_engine::workspace::project_name_problem(&draft.name)
+        {
+            self.toast(tr(problem), true);
+            return;
+        }
         let Some(backend) = self.default_builder() else { return self.need_builder() };
         // Make's pictures are still being checked: start once they are in.
         if self.pending_make_checks > 0 {
@@ -76,7 +82,7 @@ impl CraftApp {
         let game = make::is_game(&self.kinds, &draft);
         let engine = if game { crate::engine_ui::chosen(&self.kinds, &draft) } else { None };
         if let Some(b) = engine
-            && !self.game_engines.as_ref().is_some_and(|i| i.ready(b))
+            && (!self.game_engines.as_ref().is_some_and(|i| i.ready(b)) || b == craft_anything_engines::game::Builder::Unity && !self.unity_usable())
         {
             self.engine_flow.start_after = true;
             self.state.modal = Some(Modal::Engine(b));
@@ -94,7 +100,10 @@ impl CraftApp {
         }
         // The person's own project keeps its folder's name; anything else is named for what's made.
         let own = draft.folder.as_deref().and_then(Path::file_name).filter(|_| draft.mine);
-        let name = own.map_or_else(|| suggest_name(&request, &target), |n| n.to_string_lossy().into_owned());
+        let name = own.map_or_else(
+            || if draft.name.trim().is_empty() { suggest_name(&request, &target) } else { draft.name.trim().to_string() },
+            |n| n.to_string_lossy().into_owned(),
+        );
         let (projects_dir, budget, generate) = (self.settings.projects_dir(), self.settings.assets.budget(), game && draft.generate_assets);
         // The folder, its records and copies of the pictures are written on a worker (a slow or
         // network drive must not freeze the window); `created` starts the build.
@@ -151,7 +160,10 @@ impl CraftApp {
         }
     }
 
-    fn run_options(&self, backend: Option<String>, message: Option<String>, shown: Option<String>, pictures: Vec<PathBuf>) -> RunOptions {
+    fn run_options(&mut self, backend: Option<String>, message: Option<String>, shown: Option<String>, pictures: Vec<PathBuf>) -> RunOptions {
+        if let Some(session) = self.engine.try_session() {
+            self.services = craft_anything_engine::session::ToolServices::capture(&session);
+        }
         let build = &self.settings.build;
         // Each event repaints the window, so a build needs no timer to show its progress.
         let wake = self.jobs.repaint_ctx().cloned().map_or_else(Default::default, |ctx| rebuild::Wake::new(move || ctx.request_repaint()));
@@ -166,6 +178,8 @@ impl CraftApp {
             max_rounds: build.max_rounds,
             good_enough: build.good_enough,
             clean_room: Some(!self.settings.deep_mode),
+            response_language: crate::i18n::language(),
+            services: Some(self.services.clone()),
             ..RunOptions::default()
         }
     }
@@ -184,6 +198,7 @@ impl CraftApp {
     }
 
     fn start_run_with(&mut self, ws: Workspace, opts: RunOptions) {
+        self.switch_project_input(&ws.root);
         self.preview = None;
         self.state.screen = Screen::Project;
         match self.launch(ws.clone(), opts) {
@@ -201,14 +216,7 @@ impl CraftApp {
         let root = ws.root.clone();
         let same = self.workspace.as_ref().is_some_and(|w| w.root == ws.root);
         if !same {
-            // What was typed here stays with this project; the next one's comes back.
-            let typed = (std::mem::take(&mut self.state.project_input), std::mem::take(&mut self.state.project_attachments));
-            if let Some(old) = &self.workspace
-                && (!typed.0.trim().is_empty() || !typed.1.is_empty())
-            {
-                self.state.unsent.insert(old.root.clone(), typed);
-            }
-            (self.state.project_input, self.state.project_attachments) = self.state.unsent.remove(&ws.root).unwrap_or_default();
+            self.switch_project_input(&ws.root);
             // Events so far go to the project they belong to before the screen changes.
             self.poll_run();
             self.preview = None;
@@ -226,6 +234,17 @@ impl CraftApp {
         self.refresh_side_panel();
         self.state.screen = Screen::Project;
         self.send_deferred_when_ready();
+    }
+
+    fn switch_project_input(&mut self, root: &Path) {
+        if self.workspace.as_ref().is_some_and(|ws| ws.root == root) {
+            return;
+        }
+        let typed = (std::mem::take(&mut self.state.project_input), std::mem::take(&mut self.state.project_attachments));
+        if let Some(old) = &self.workspace {
+            self.state.unsent.insert(old.root.clone(), typed);
+        }
+        (self.state.project_input, self.state.project_attachments) = self.state.unsent.remove(root).unwrap_or_default();
     }
 
     pub(crate) fn send_deferred_when_ready(&mut self) {
@@ -1204,11 +1223,11 @@ fn feed(app: &mut CraftApp, ui: &mut Ui, ws: &Workspace, waiting: &[Note]) {
     let t = Tokens::get(ui.ctx());
     let ctx = ui.ctx().clone();
     let mut answers: Vec<(String, Answer, String)> = Vec::new();
-    let mut retry = false;
+    let mut manage_accounts = false;
     // Lent out while it's drawn (the cards need the app), not copied every frame; a part that
     // fails to draw still gives it back.
     let items = std::mem::take(&mut app.state.feed);
-    let drawn = crate::guard("feed", || draw_items(app, ui, ws, &items, &ctx, &mut answers, &mut retry));
+    let drawn = crate::guard("feed", || draw_items(app, ui, ws, &items, &ctx, &mut answers, &mut manage_accounts));
     app.state.feed = items;
     if drawn.is_none() {
         ui.colored_label(t.danger, tr("Part of this screen hit a bug and was skipped. Your work is safe."));
@@ -1246,12 +1265,11 @@ fn feed(app: &mut CraftApp, ui: &mut Ui, ws: &Workspace, waiting: &[Note]) {
         let step = items.iter().rposition(|i| matches!(i, FeedItem::Step { .. }));
         // The builder's own words for the step it's on, else the workflow's stage.
         let doing = plan(items).and_then(|p| p.iter().find(|s| s.status == PlanStatus::Doing)).map(|s| s.doing.as_str());
-        let title = doing.or_else(|| {
-            step.and_then(|s| match &items[s] {
-                FeedItem::Step { text, .. } => Some(text.as_str()),
-                _ => None,
-            })
+        let stage = step.and_then(|s| match &items[s] {
+            FeedItem::Step { step, text } => Some((step, text)),
+            _ => None,
         });
+        let title = doing.map(tr).or_else(|| stage.map(|(step, text)| crate::i18n::tr_known(text).unwrap_or_else(|| tr(step.label()))));
         let done: usize = items[step.map_or(0, |s| s + 1)..]
             .iter()
             .map(|i| match i {
@@ -1268,14 +1286,19 @@ fn feed(app: &mut CraftApp, ui: &mut Ui, ws: &Workspace, waiting: &[Note]) {
                 .collect::<Vec<_>>()
                 .join("  ·  ");
         let (began, quiet) = app.open_run().map_or((None, None), |r| (Some(r.started()), Some(r.quiet_for())));
-        widgets::working_since(ui, title.unwrap_or("Working on it"), (!detail.is_empty()).then_some(detail.as_str()), began, quiet);
+        let shown = title.unwrap_or_else(|| tr("Working on it"));
+        let row = ui.scope(|ui| widgets::working_since(ui, &shown, (!detail.is_empty()).then_some(detail.as_str()), began, quiet)).response;
+        if let Some((_, text)) = stage {
+            row.on_hover_text(text);
+        }
     }
     run_details(app, ui, status_row);
     for (id, a, shown) in answers {
         app.answer_request(&id, a, shown);
     }
-    if retry {
-        app.follow_up(None);
+    if manage_accounts {
+        app.state.settings_open = true;
+        app.state.settings_tab = crate::state::SettingsTab::Ai;
     }
 }
 
@@ -1286,7 +1309,24 @@ const NOW_LENGTH: usize = 90;
 fn now_words(app: &CraftApp, now: &ActivityNow) -> Option<String> {
     let words = |a: &Action| {
         let registry = app.engine.registry();
-        let w = a.words_with(|tool| registry.canonical(tool).and_then(|id| registry.get(id)).map(|s| s.title.to_string()));
+        let title = || registry.canonical(&a.tool).and_then(|id| registry.get(id)).map(|s| tr(s.title)).unwrap_or_else(|| a.tool.replace('_', " "));
+        let head = a.verb.map(tr).unwrap_or_else(title);
+        let w = match (&a.verb, &a.object) {
+            (Some(verb), Some(object)) => match *verb {
+                "Running" => trf("Running {object}", &[("object", object)]),
+                "Reading" => trf("Reading {object}", &[("object", object)]),
+                "Writing" => trf("Writing {object}", &[("object", object)]),
+                "Editing" => trf("Editing {object}", &[("object", object)]),
+                "Looking for" => trf("Looking for {object}", &[("object", object)]),
+                "Searching for" => trf("Searching for {object}", &[("object", object)]),
+                "Fetching" => trf("Fetching {object}", &[("object", object)]),
+                "Searching the web for" => trf("Searching the web for {object}", &[("object", object)]),
+                "Handing off" => trf("Handing off {object}", &[("object", object)]),
+                _ => format!("{head} {object}"),
+            },
+            (None, Some(object)) => format!("{head}: {object}"),
+            (_, None) => head,
+        };
         match w.char_indices().nth(NOW_LENGTH) {
             Some((end, _)) => format!("{}…", w.get(..end).unwrap_or_default()),
             None => w,
@@ -1348,7 +1388,7 @@ fn run_details(app: &mut CraftApp, ui: &mut Ui, status_row: bool) {
                             ui.horizontal(|ui| {
                                 ui.set_height(LINE);
                                 ui.label(RichText::new(crate::usage::duration_words(line.at)).font(theme::mono(theme::CAPTION)).color(t.text_faint));
-                                ui.label(RichText::new(line.kind.tag()).font(theme::mono(theme::CAPTION)).color(colour));
+                                ui.label(RichText::new(tr(line.kind.tag())).font(theme::mono(theme::CAPTION)).color(colour));
                                 ui.add(egui::Label::new(RichText::new(&line.text).font(theme::mono(theme::CAPTION)).color(words)).truncate())
                                     .on_hover_text(&line.text);
                             });
@@ -1370,7 +1410,7 @@ fn run_details(app: &mut CraftApp, ui: &mut Ui, status_row: bool) {
     }
 }
 
-/// Each item of the feed, in order. Answers and "Try again" are collected, to act on afterwards.
+/// Each item of the feed, in order. Actions are collected, to act on afterwards.
 fn draw_items(
     app: &mut CraftApp,
     ui: &mut Ui,
@@ -1378,7 +1418,7 @@ fn draw_items(
     items: &[FeedItem],
     ctx: &egui::Context,
     answers: &mut Vec<(String, Answer, String)>,
-    retry: &mut bool,
+    manage_accounts: &mut bool,
 ) {
     let t = Tokens::get(ui.ctx());
     let advanced = !app.beginner();
@@ -1394,7 +1434,10 @@ fn draw_items(
         questions_up_to(app, ui, i);
         ui.push_id(i, |ui| match item {
             FeedItem::User(text) => chat::user_bubble(ui, text.text(), false),
-            FeedItem::Step { text, .. } => chat::activity_row(ui, RichText::new(text).color(t.text_dim).size(theme::SMALL)),
+            FeedItem::Step { step, text } => {
+                let shown = crate::i18n::tr_known(text).unwrap_or_else(|| tr(step.label()));
+                ui.scope(|ui| chat::activity_row(ui, RichText::new(shown).color(t.text_dim).size(theme::SMALL))).response.on_hover_text(text);
+            }
             FeedItem::Paused => chat::activity_row(ui, RichText::new(tr("Paused.")).color(t.text_dim).size(theme::SMALL)),
             FeedItem::Agent { text, streaming } => {
                 chat::answer_bubble(ui, false, text.trim(), |ui| {
@@ -1416,38 +1459,27 @@ fn draw_items(
             }
             FeedItem::Check(c) => check_card(app, ui, ctx, ws, c),
             FeedItem::Error { message, remediation, log } => {
-                widgets::card(&t).stroke(theme::hairline(t.danger.gamma_multiply(0.6))).inner_margin(theme::pad(space::L)).show(ui, |ui| {
-                    ui.set_width(ui.available_width());
-                    ui.horizontal(|ui| {
-                        icons::show(ui, "triangle-alert", size::ICON, t.danger);
-                        ui.add(egui::Label::new(RichText::new(message).color(t.text)).wrap());
-                    });
-                    if let Some(r) = remediation {
-                        ui.add(egui::Label::new(RichText::new(r).color(t.text_dim)).wrap());
-                    }
-                    if let Some(l) = log
-                        && widgets::open_log_button(ui, l)
-                    {
-                        app.open_log(l);
-                    }
-                    let last = i + 1 == items.len();
-                    // A pause or a stop part-way gets the Continue card below instead.
-                    if last && !app.running() && !can_continue(app, ws) {
-                        ui.add_space(space::S);
-                        ui.horizontal(|ui| {
-                            if widgets::primary_icon(ui, Some("refresh-cw"), "Try again", true).clicked() {
-                                *retry = true;
-                            }
+                if chat::failure(ui, chat::FailureKind::Build, message, remediation.as_deref(), log.as_deref())
+                    && let Some(log) = log
+                {
+                    app.open_log(log);
+                }
+                let last = i + 1 == items.len();
+                if last && !app.running() {
+                    ui.horizontal_wrapped(|ui| {
+                        if widgets::secondary(ui, Some("settings"), "Models & accounts").clicked() {
+                            *manage_accounts = true;
+                        }
+                        if !can_continue(app, ws) {
                             done_button(app, ui, ws);
-                            // A fix that names a command to run (sign in, install…) offers to copy it.
-                            if let Some(cmd) = remediation.as_deref().and_then(command_in)
-                                && widgets::secondary(ui, Some("copy"), "Copy the command").on_hover_text(cmd).clicked()
-                            {
-                                ui.ctx().copy_text(cmd.to_string());
-                            }
-                        });
-                    }
-                });
+                        }
+                        if let Some(cmd) = remediation.as_deref().and_then(command_in)
+                            && widgets::secondary(ui, Some("copy"), "Copy the command").on_hover_text(cmd).clicked()
+                        {
+                            ui.ctx().copy_text(cmd.to_string());
+                        }
+                    });
+                }
             }
         });
         ui.add_space(chat::MESSAGE_GAP);
@@ -2219,6 +2251,172 @@ mod tests {
     use super::*;
     use craft_anything_ai::AgentEvent;
 
+    #[test]
+    fn ui_settings_flush_and_exit_preserve_newer_run_fields() {
+        use craft_anything_engine::{CallOptions, Caller, Engine};
+        let engine = crate::demo::engine(craft_anything_engine::Mode::Beginner, true);
+        let (path, mut other) = {
+            let session = engine.session();
+            let path = session.config_dir().join("config.toml");
+            session.settings.save_to(&path).unwrap();
+            (path, craft_anything_engine::Session::isolated(&session.config_dir()))
+        };
+        other.settings = craft_anything_engine::Settings::load_from(&path);
+        other.settings.deep_mode = true;
+        let run = Engine::new(other);
+        let mut app = crate::demo::app(engine.clone());
+        app.persist = true;
+        run.call("settings_set", serde_json::json!({"key":"language","value":"ko"}), CallOptions::new(Caller::Cli)).unwrap();
+        run.call("settings_set", serde_json::json!({"key":"build.parallel","value":5}), CallOptions::new(Caller::Cli)).unwrap();
+        app.settings.theme = "studio-light".into();
+        app.settings_changed();
+        let ctx = egui::Context::default();
+        app.flush_settings(&ctx);
+        app.save_due = Some(std::time::Instant::now());
+        app.flush_settings(&ctx);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while app.saving.is_some() && std::time::Instant::now() < deadline {
+            app.take_finished_jobs();
+            std::thread::yield_now();
+        }
+        assert!(app.saving.is_none(), "the queued save completed");
+        let saved = craft_anything_engine::Settings::load_from(&path);
+        assert_eq!((saved.theme.as_str(), saved.language.as_str(), saved.build.parallel), ("studio-light", "ko", 5));
+        run.call("settings_set", serde_json::json!({"key":"assets.budget_usd","value":19.0}), CallOptions::new(Caller::Cli)).unwrap();
+        run.call("settings_set", serde_json::json!({"key":"build.max_rounds","value":11}), CallOptions::new(Caller::Cli)).unwrap();
+        app.settings.theme = "studio".into();
+        app.settings_changed();
+        eframe::App::on_exit(&mut app);
+        let saved = craft_anything_engine::Settings::load_from(&path);
+        assert_eq!((saved.theme.as_str(), saved.language.as_str(), saved.build.parallel, saved.build.max_rounds), ("studio", "ko", 5, 11));
+        assert_eq!(saved.assets.budget_usd, 19.0);
+    }
+
+    #[test]
+    fn busy_ui_launch_preserves_initial_and_refreshed_asset_services() {
+        use craft_anything_engines::assets::{AssetProvider, AssetProviders, AssetRequest, Generated};
+        struct Fixture(&'static [u8]);
+        impl AssetProvider for Fixture {
+            fn id(&self) -> &'static str {
+                "fal"
+            }
+            fn name(&self) -> &'static str {
+                "Fixture"
+            }
+            fn generate(&self, _: &str, _: &AssetRequest) -> Result<Generated, craft_anything_engine::evidence::ToolError> {
+                Ok(Generated { url: String::new(), bytes: self.0.to_vec(), cost_usd: 0.0 })
+            }
+        }
+        fn providers(bytes: &'static [u8]) -> AssetProviders {
+            let mut services = AssetProviders::built_in();
+            services.register(std::sync::Arc::new(Fixture(bytes)));
+            services
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let engine = crate::demo::engine(craft_anything_engine::Mode::Beginner, true);
+        let mut cfg = craft_anything_ai::AiConfig::default();
+        cfg.backends.push(craft_anything_ai::BackendEntry {
+            config: craft_anything_ai::BackendConfig {
+                name: "Connected".into(),
+                kind: craft_anything_ai::BackendKind::Managed,
+                model: "chosen".into(),
+                base_url: None,
+                ssh_host: None,
+                enabled: true,
+            },
+            options: craft_anything_ai::BackendOptions { provider_id: Some("openai".into()), ..Default::default() },
+        });
+        let config_dir = {
+            let mut session = engine.session();
+            session.settings.ai = cfg.to_table().unwrap();
+            session.ext.insert(std::sync::Arc::new(providers(b"initial-picture")));
+            let path = session.config_dir();
+            session.settings.save_to(&path.join("config.toml")).unwrap();
+            path
+        };
+        let mut app = crate::demo::app(engine.clone());
+        let mut standin = rebuild::StandIns::new().starter();
+        app.runs = rebuild::RunSet::new(2).with_starter(Box::new(move |hub, ws, opts| {
+            let mut session = craft_anything_engine::Session::isolated(&config_dir);
+            opts.services.as_ref().ok_or_else(|| craft_anything_engine::evidence::ToolError::internal("Missing run services"))?.install(&mut session);
+            let provider = session.ext.get::<AssetProviders>().and_then(|p| p.get("fal"));
+            if !provider.is_some_and(|p| p.name() == "Fixture") {
+                return Err(craft_anything_engine::evidence::ToolError::internal("Missing fixture provider"));
+            }
+            session.ext.insert(std::sync::Arc::new(craft_anything_engine::inbox::InboxDir(ws.inbox_dir())));
+            session.ext.insert(std::sync::Arc::new(craft_anything_engine::tools::asset_tools::AssetKeys([("fal".into(), "sk-test".into())].into())));
+            let isolated = hub.engine.fork_session(session);
+            isolated.call(
+                "assets_image_generate",
+                serde_json::json!({"prompt":"an original shape", "save_as":"fixture.png"}),
+                craft_anything_engine::CallOptions::new(craft_anything_engine::Caller::Ui),
+            )?;
+            standin(hub, ws, opts)
+        }));
+        for (name, expected) in [("Initial", b"initial-picture".as_slice()), ("Refreshed", b"refreshed-picture".as_slice())] {
+            if name == "Refreshed" {
+                engine.session().ext.insert(std::sync::Arc::new(providers(b"refreshed-picture")));
+                app.acted("plugins_refresh", Ok(serde_json::json!({"refreshed":[]})));
+            }
+            let mut ws = Workspace::create(dir.path(), name, "A website", TargetRef::None).unwrap();
+            ws.set_person(|m| m.generate_assets = true).unwrap();
+            let (held, ready) = std::sync::mpsc::channel();
+            let (release, wait) = std::sync::mpsc::channel();
+            let locked = {
+                let engine = engine.clone();
+                std::thread::spawn(move || {
+                    let _session = engine.session();
+                    held.send(()).unwrap();
+                    wait.recv_timeout(std::time::Duration::from_secs(10)).unwrap();
+                })
+            };
+            ready.recv_timeout(std::time::Duration::from_secs(10)).unwrap();
+            let opts = app.run_options(Some("Connected".into()), None, None, Vec::new());
+            app.start_run_with(ws.clone(), opts);
+            release.send(()).unwrap();
+            locked.join().unwrap();
+            assert_eq!(std::fs::read(ws.app_dir().join("fixture.png")).unwrap(), expected);
+            assert!(app.runs.is_running(&ws.root));
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn restoring_aliased_project_drafts_keeps_every_legacy_text() {
+        struct Memory(std::collections::BTreeMap<String, String>);
+        impl eframe::Storage for Memory {
+            fn get_string(&self, key: &str) -> Option<String> {
+                self.0.get(key).cloned()
+            }
+            fn set_string(&mut self, key: &str, value: String) {
+                self.0.insert(key.into(), value);
+            }
+            fn remove_string(&mut self, key: &str) {
+                self.0.remove(key);
+            }
+            fn flush(&mut self) {}
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let ws = Workspace::create(dir.path(), "Project", "A website", TargetRef::None).unwrap();
+        let first = dir.path().join("alias-first");
+        let second = dir.path().join("alias-second");
+        std::os::unix::fs::symlink(&ws.root, &first).unwrap();
+        std::os::unix::fs::symlink(&ws.root, &second).unwrap();
+        let prefs = crate::Prefs {
+            last_project: Some(first.clone()),
+            unsent: [(ws.root.clone(), "Canonical draft".into()), (first, "First draft".into()), (second, "Second draft".into())].into(),
+            ..Default::default()
+        };
+        let saved = Memory([(crate::PREFS_KEY.into(), serde_json::to_string(&prefs).unwrap())].into());
+        let mut app = crate::demo::app(crate::demo::engine(craft_anything_engine::Mode::Beginner, true));
+        app.load_prefs(Some(&saved));
+        assert_eq!(app.workspace.as_ref().unwrap().root, ws.root);
+        let restored: std::collections::BTreeSet<_> = app.state.project_input.split("\n\n").collect();
+        assert_eq!(restored, ["Canonical draft", "First draft", "Second draft"].into());
+        assert!(app.state.unsent.is_empty(), "all aliases restore into the open project's prompt");
+        assert!(app.prefs().unsent.contains_key(&ws.root));
+    }
+
     fn select_managed_model(app: &mut CraftApp) {
         crate::demo::provider_accounts(app);
         let name = "Example AI".to_string();
@@ -2232,6 +2430,43 @@ mod tests {
         });
         app.backend_options.insert(name.clone(), craft_anything_ai::BackendOptions { provider_id: Some("openai".into()), ..Default::default() });
         app.state.backend = Some(name);
+    }
+
+    #[test]
+    fn starting_another_project_keeps_each_projects_unsent_draft() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = Workspace::create(dir.path(), "Alpha", "A website", TargetRef::None).unwrap();
+        let b = Workspace::create(dir.path(), "Beta", "A website", TargetRef::None).unwrap();
+        let mut app = crate::demo::app(crate::demo::engine(craft_anything_engine::Mode::Beginner, true));
+        let mut cfg = craft_anything_ai::AiConfig::default();
+        cfg.backends.push(craft_anything_ai::BackendEntry {
+            config: craft_anything_ai::BackendConfig {
+                name: "Connected".into(),
+                kind: craft_anything_ai::BackendKind::Managed,
+                model: "chosen".into(),
+                base_url: None,
+                ssh_host: None,
+                enabled: true,
+            },
+            options: craft_anything_ai::BackendOptions { provider_id: Some("openai".into()), ..Default::default() },
+        });
+        app.engine.session().settings.ai = cfg.to_table().unwrap();
+        let fake = rebuild::StandIns::new();
+        app.runs = rebuild::RunSet::new(2).with_starter(fake.starter());
+        app.open_workspace(a.clone());
+        app.state.project_input = "Unsent for Alpha".into();
+        app.state.project_attachments = vec![dir.path().join("alpha.png")];
+        let opts = RunOptions { backend: Some("Connected".into()), ..RunOptions::default() };
+        app.start_run_with(b.clone(), opts);
+        assert!(app.state.project_input.is_empty() && app.state.project_attachments.is_empty());
+        assert!(app.runs.is_running(&b.root));
+        app.state.project_input = "Unsent for Beta".into();
+        app.open_workspace(a);
+        assert_eq!(app.state.project_input, "Unsent for Alpha");
+        assert_eq!(app.state.project_attachments, [dir.path().join("alpha.png")]);
+        app.open_workspace(b);
+        assert_eq!(app.state.project_input, "Unsent for Beta");
+        assert!(app.state.project_attachments.is_empty());
     }
 
     #[test]

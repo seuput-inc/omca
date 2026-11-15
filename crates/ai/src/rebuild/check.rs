@@ -14,7 +14,7 @@ fn run_in(app: &Path, prog: &Path, args: &[String], minutes: u64, stop: &CheckSt
     // zero deadline is seen and count as passed.
     stop.check().map_err(|e| e.message)?;
     let s = stop.clone();
-    craft_anything_platform::Process::new(prog)
+    game::unity_process(prog, game::rust_process(prog, craft_anything_platform::Process::new(prog)))
         .args(args)
         .cwd(app)
         .timeout(timeout)
@@ -33,9 +33,10 @@ fn run_in(app: &Path, prog: &Path, args: &[String], minutes: u64, stop: &CheckSt
 }
 
 /// Run one of a toolchain's commands in `app`.
-fn run_tool(app: &Path, tool: &stacks::Toolchain, command: &[String], minutes: u64, stop: &CheckStop) -> Result<(bool, String), String> {
+fn run_tool(app: &Path, tool: &stacks::Toolchain, command: &[String], editor: Option<&Path>, minutes: u64, stop: &CheckStop) -> Result<(bool, String), String> {
     let Some((program, args)) = tool.command(app, command) else { return Err(format!("{} has no such command.", tool.name)) };
-    run_in(app, &program, &args, minutes, stop)
+    let program = if program == Path::new("cargo") { editor.filter(|p| p.file_stem().is_some_and(|n| n == "cargo")).unwrap_or(&program) } else { &program };
+    run_in(app, program, &args, minutes, stop)
 }
 
 /// What a Unity without a licence prints, and what to tell the person.
@@ -50,7 +51,7 @@ pub(super) fn own_build_check(app: &Path, place: &str, stack: &str, editor: Opti
         return own_unity_check(app, ed, stop);
     }
     match stacks::toolchain_in(app).filter(|_| engine.is_none()) {
-        Some(tool) => own_build(app, tool, stop),
+        Some(tool) => own_build(app, tool, editor, stop),
         None if engine.is_some() || static_site(app) => build_check(app, place, stack, editor, stop),
         None => (true, "Nothing was built: OMCA doesn't know how to build this kind of project.".into()),
     }
@@ -72,8 +73,8 @@ fn own_unity_check(app: &Path, editor: &Path, stop: &CheckStop) -> (bool, String
     }
 }
 
-fn own_build(app: &Path, tool: &stacks::Toolchain, stop: &CheckStop) -> (bool, String) {
-    match run_tool(app, tool, &tool.build, 2 * 60, stop) {
+fn own_build(app: &Path, tool: &stacks::Toolchain, editor: Option<&Path>, stop: &CheckStop) -> (bool, String) {
+    match run_tool(app, tool, &tool.build, editor, 2 * 60, stop) {
         Ok((true, _)) => (true, format!("`{}` passed.", tool.build.join(" "))),
         Ok((false, out)) => (false, format!("Build failed: {}", error_lines(&out))),
         Err(e) => (false, format!("Couldn't run the build: {e}")),
@@ -82,7 +83,7 @@ fn own_build(app: &Path, tool: &stacks::Toolchain, stop: &CheckStop) -> (bool, S
 
 /// A person's own project: run its tests. Output that says none ran isn't a failure, and neither
 /// is a project we know no way to test, and the note says so.
-pub(super) fn own_tests_check(app: &Path, tool: Option<&stacks::Toolchain>, stop: &CheckStop) -> (bool, String) {
+pub(super) fn own_tests_check(app: &Path, tool: Option<&stacks::Toolchain>, editor: Option<&Path>, stop: &CheckStop) -> (bool, String) {
     let Some(tool) = tool else { return (true, "No tests ran: OMCA doesn't know how to test this kind of project.".into()) };
     let says_none = |text: &str| tool.no_tests.iter().find(|n| text.contains(n.as_str())).cloned();
     if let Some(name) = &tool.test_script {
@@ -93,7 +94,7 @@ pub(super) fn own_tests_check(app: &Path, tool: Option<&stacks::Toolchain>, stop
             return (true, format!("No tests ran: package.json has no `{name}` script to run."));
         }
     }
-    match run_tool(app, tool, &tool.test, 30, stop) {
+    match run_tool(app, tool, &tool.test, editor, 30, stop) {
         Ok((true, _)) => (true, format!("`{}` passed.", tool.test.join(" "))),
         Ok((false, out)) => match says_none(&out).filter(|_| tool.test_script.is_none()) {
             Some(why) => (true, format!("No tests ran: {}.", why.trim_end_matches('.'))),
@@ -171,7 +172,9 @@ pub(super) fn build_check(app: &Path, place: &str, stack: &str, editor: Option<&
                 (ok && !bad, out)
             })
         }
-        _ if app.join("Cargo.toml").is_file() => run(Path::new("cargo"), &["build".into(), "--quiet".into()], 2 * 60),
+        _ if app.join("Cargo.toml").is_file() => {
+            run(editor.filter(|p| p.file_stem().is_some_and(|n| n == "cargo")).unwrap_or(Path::new("cargo")), &["build".into(), "--quiet".into()], 2 * 60)
+        }
         _ if app.join("package.json").is_file() => run(Path::new(if cfg!(windows) { "npm.cmd" } else { "npm" }), &["run".into(), "build".into()], 2 * 60),
         (None, _) => {
             return stacks::toolchain_in(app).map_or_else(
@@ -182,7 +185,7 @@ pub(super) fn build_check(app: &Path, place: &str, stack: &str, editor: Option<&
                         (false, missing(app, place, format!("No project to build found in {place} yet.")))
                     }
                 },
-                |tool| own_build(app, tool, stop),
+                |tool| own_build(app, tool, editor, stop),
             );
         }
         _ => return (false, missing(app, place, format!("No project to build found in {place} yet."))),
@@ -276,7 +279,7 @@ mod tests {
     #[test]
     fn a_persons_own_tests_decide_and_no_tests_is_no_failure() {
         let (d, stop) = (tempfile::tempdir().unwrap(), CheckStop::default());
-        let tests = |tool: &stacks::Toolchain| own_tests_check(d.path(), Some(tool), &stop);
+        let tests = |tool: &stacks::Toolchain| own_tests_check(d.path(), Some(tool), None, &stop);
         assert!(tests(&stand_in("exit 0", &[])).0);
         let (passed, note) = tests(&stand_in("echo 'adds: 4 is not 5'; echo; echo '1 failed'; exit 1", &[]));
         assert!(!passed && note.ends_with("adds: 4 is not 5\n1 failed"), "the summary, not only lines saying error: {note}");
@@ -285,7 +288,7 @@ mod tests {
         let missing = stacks::Toolchain { test: vec!["no-such-program-here".into()], ..Default::default() };
         let (passed, note) = tests(&missing);
         assert!(!passed && note.starts_with("Couldn't run the tests"), "{note}");
-        let (passed, note) = own_tests_check(d.path(), None, &stop);
+        let (passed, note) = own_tests_check(d.path(), None, None, &stop);
         assert!(passed && note.starts_with("No tests ran"), "{note}");
     }
 
@@ -297,7 +300,7 @@ mod tests {
         std::fs::write(d.path().join("own-sh.bat"), "not for this system").unwrap();
         let test = ["no-such-program-here", "-c", "echo 'error: from its own copy'; exit 1"].map(String::from).to_vec();
         let tool = stacks::Toolchain { test, local_programs: vec!["not-here".into(), "own-sh.bat".into(), "own-sh".into()], ..Default::default() };
-        let (passed, note) = own_tests_check(d.path(), Some(&tool), &stop);
+        let (passed, note) = own_tests_check(d.path(), Some(&tool), None, &stop);
         assert!(!passed && note.contains("from its own copy"), "{note}");
     }
 
@@ -313,7 +316,7 @@ mod tests {
         };
         let printing = |tool: &stacks::Toolchain, line: &str| {
             let test = ["sh", "-c", "printf '%s\\n' \"$1\"; exit 2", "sh", line].map(String::from).to_vec();
-            own_tests_check(d.path(), Some(&stacks::Toolchain { test, ..tool.clone() }), &stop).0
+            own_tests_check(d.path(), Some(&stacks::Toolchain { test, ..tool.clone() }), None, &stop).0
         };
         let (make, node) = (named_by("Makefile"), named_by("package.json"));
         assert!(printing(make, "make: *** No rule to make target `test'.  Stop."));
@@ -335,12 +338,12 @@ mod tests {
         let node = stacks::Toolchain { test: vec!["no-such-program-here".into()], windows_program: None, ..table.clone() };
         for json in [r#"{"name":"x"}"#, r#"{"scripts":{"test":"echo \"Error: no test specified\" && exit 1"}}"#] {
             std::fs::write(d.path().join("package.json"), json).unwrap();
-            let (passed, note) = own_tests_check(d.path(), Some(&node), &stop);
+            let (passed, note) = own_tests_check(d.path(), Some(&node), None, &stop);
             assert!(passed && note.starts_with("No tests ran"), "nothing is started: {note}");
         }
         let real = r#"{"scripts":{"test":"jest && echo 'no test specified for integration'"}}"#;
         std::fs::write(d.path().join("package.json"), real).unwrap();
-        let (passed, note) = own_tests_check(d.path(), Some(&node), &stop);
+        let (passed, note) = own_tests_check(d.path(), Some(&node), None, &stop);
         assert!(!passed && note.starts_with("Couldn't run the tests"), "it's started: {note}");
     }
 
@@ -359,8 +362,8 @@ mod tests {
     #[test]
     fn a_persons_own_build_is_judged_by_its_toolchain() {
         let (d, stop) = (tempfile::tempdir().unwrap(), CheckStop::default());
-        assert!(own_build(d.path(), &stand_in("exit 0", &[]), &stop).0);
-        let (passed, note) = own_build(d.path(), &stand_in("echo 'error: no such file'; exit 2", &[]), &stop);
+        assert!(own_build(d.path(), &stand_in("exit 0", &[]), None, &stop).0);
+        let (passed, note) = own_build(d.path(), &stand_in("echo 'error: no such file'; exit 2", &[]), None, &stop);
         assert!(!passed && note.contains("no such file"), "{note}");
     }
 

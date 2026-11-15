@@ -1,10 +1,9 @@
 //! Game engines: which one a game was made with (from its files, nothing is run), which ones this
 //! computer can build with, and how to get one.
 //!
-//! Getting an engine never bypasses the vendor: Godot is a portable download checked against the
-//! official checksums; Unity Hub and the Epic Games Launcher are the vendors' own installers,
-//! opened only after Windows confirms the vendor signed them. Accounts, licences and terms stay in
-//! the vendor's own windows, with the person.
+//! Getting an engine never bypasses the vendor. Godot, Rust and Unity use verified official
+//! downloads; Epic uses its signed official launcher. Account and licence changes remain explicit
+//! human actions. Versions install separately so existing projects keep their original engine.
 
 use craft_anything_evidence::{ErrorCode, ToolError};
 use craft_anything_platform::process::{Cancel, Launch, Process};
@@ -12,6 +11,12 @@ use serde::{Deserialize, Serialize};
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
+#[path = "game_release.rs"]
+mod release;
+pub use release::{Release, rust_process};
+#[path = "game_unity.rs"]
+mod unity;
+pub use unity::{UnityAction, UnityStatus, unity_private_environment_probe, unity_process, unity_setup};
 /// The engine a game was made with.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -124,7 +129,7 @@ impl Builder {
     /// [`needs`](Builder::needs) for a named OS, so every platform's words are testable here.
     fn needs_for(self, os: &str) -> &'static str {
         match self {
-            Builder::Unity => "About 10 GB. Free for personal use with a Unity account.",
+            Builder::Unity => "About 10 GB. A Unity account and an eligible licence are required.",
             Builder::Unreal if os == "linux" => "An Unreal Engine Linux installation with its bundled Clang C++ toolchain.",
             Builder::Unreal if os == "macos" => "About 60 GB, an Epic Games account, and Xcode.",
             Builder::Unreal => "About 60 GB, an Epic Games account, and Visual Studio's C++ tools.",
@@ -583,6 +588,7 @@ pub fn inventory(p: &Places) -> Inventory {
     engines.extend(unity_editors(p));
     engines.extend(unreal_installs(p));
     engines.extend(godot_installs(p));
+    engines.extend(managed_rust(&p.store));
     if let Some(cargo) = p.use_path.then(|| craft_anything_platform::which("cargo")).flatten() {
         engines.push(Installed { builder: Builder::Rust, version: String::new(), program: cargo });
     }
@@ -619,6 +625,7 @@ fn unity_editors(p: &Places) -> Vec<Installed> {
     let mut roots: Vec<PathBuf> = p.program_files.iter().map(|pf| pf.join("Unity/Hub/Editor")).collect();
     roots.extend(p.applications.iter().map(|a| a.join("Unity/Hub/Editor")));
     roots.extend(p.home.iter().map(|h| h.join("Unity/Hub/Editor")));
+    roots.push(p.store.join("unity"));
     // Unity Hub's own folder: under %APPDATA% on Windows, under the home folder elsewhere.
     let hub = (p.app_data.iter().map(|a| a.join("UnityHub")))
         .chain(p.home.iter().flat_map(|h| [h.join("Library/Application Support/UnityHub"), h.join(".config/UnityHub")]));
@@ -742,24 +749,58 @@ fn unreal_install(dir: &Path) -> Option<Installed> {
     Some(Installed { builder: Builder::Unreal, version, program })
 }
 
+/// Complete versioned private toolchains, newest first. Hidden staging folders are never ready.
+pub fn managed_rust(store: &Path) -> Vec<Installed> {
+    let mut installed: Vec<_> = subdirs(&store.join("rust"))
+        .into_iter()
+        .filter_map(|root| {
+            let version = root.file_name()?.to_str()?.to_owned();
+            if version.starts_with('.') {
+                return None;
+            }
+            let program = root.join(format!("cargo/bin/cargo{}", std::env::consts::EXE_SUFFIX));
+            let rustc = root.join(format!("cargo/bin/rustc{}", std::env::consts::EXE_SUFFIX));
+            (program.is_file() && rustc.is_file() && root.join("rustup/settings.toml").is_file()).then_some(Installed {
+                builder: Builder::Rust,
+                version,
+                program,
+            })
+        })
+        .collect();
+    installed.sort_by_key(|i| std::cmp::Reverse(version_key(&i.version)));
+    installed
+}
+
+/// Child-only environment for the newest complete private Rust toolchain in this explicit store.
+pub fn rust_environment(store: &Path) -> Result<Vec<(String, std::ffi::OsString)>, ToolError> {
+    let Some(install) = managed_rust(store).into_iter().next() else { return Ok(Vec::new()) };
+    let bin = install.program.parent().ok_or_else(|| ToolError::invalid("The private Rust install has no bin folder."))?;
+    let cargo = bin.parent().ok_or_else(|| ToolError::invalid("The private Rust install has no cargo folder."))?;
+    let root = cargo.parent().ok_or_else(|| ToolError::invalid("The private Rust install has no version folder."))?;
+    let mut paths = vec![bin.to_path_buf()];
+    if let Some(path) = std::env::var_os("PATH") {
+        paths.extend(std::env::split_paths(&path));
+    }
+    let path = std::env::join_paths(paths).map_err(|_| ToolError::new(ErrorCode::BadSettings, "The engine store path cannot be represented in PATH."))?;
+    Ok(vec![("CARGO_HOME".into(), cargo.as_os_str().to_owned()), ("RUSTUP_HOME".into(), root.join("rustup").into_os_string()), ("PATH".into(), path)])
+}
+
 fn godot_installs(p: &Places) -> Vec<Installed> {
     let dir = p.store.join("godot");
     let mut v: Vec<Installed> = std::fs::read_dir(&dir)
         .into_iter()
         .flatten()
         .flatten()
-        .map(|e| e.path())
-        .filter_map(|path| {
-            let name = path.file_name()?.to_string_lossy().into_owned();
-            // The console build is a helper; the app build is the editor.
-            let editor =
-                name.starts_with("Godot_v") && !name.contains("console") && (name.ends_with(".exe") || name.ends_with(".x86_64") || name.ends_with(".app"));
-            if !editor {
+        .filter_map(|entry| {
+            let path = entry.path();
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if name.starts_with('.') {
                 return None;
             }
-            let program = if name.ends_with(".app") { path.join("Contents/MacOS/Godot") } else { path };
-            let version = name.trim_start_matches("Godot_v").split('-').next()?.to_string();
-            Some(Installed { builder: Builder::Godot, version, program })
+            if let Some((version, program)) = release::installed_godot(&path, &name) {
+                return Some(Installed { builder: Builder::Godot, version, program });
+            }
+            None
         })
         .collect();
     if p.use_path {
@@ -826,13 +867,6 @@ fn has_msvc_compiler(toolset: &Path) -> bool {
 
 // ---- getting one ---------------------------------------------------------------------------------
 
-/// The Godot release OMCA downloads.
-pub const GODOT_VERSION: &str = "4.4.1-stable";
-/// Largest file unpacked from Godot's download: the macOS app's universal program is over the
-/// 256 MB other engines' files are held to (#100). The download is checked against Godot's own
-/// SHA-512 list first.
-const GODOT_MAX_FILE: u64 = 1 << 30;
-
 /// The official page to get `b` by hand (used where we can't download it for the person).
 pub fn download_page(b: Builder) -> &'static str {
     match b {
@@ -849,11 +883,17 @@ pub const VISUAL_STUDIO_PAGE: &str = "https://visualstudio.microsoft.com/downloa
 /// A vendor installer we can download for the person on this OS: (url, file name, the
 /// organisation that must have signed it).
 pub fn installer(b: Builder) -> Option<(&'static str, &'static str, &'static str)> {
+    if cfg!(target_os = "macos") && b == Builder::Unreal {
+        return Some((
+            "https://launcher-public-service-prod06.ol.epicgames.com/launcher/api/installer/download/EpicGamesLauncherInstaller.dmg",
+            "EpicGamesLauncherInstaller.dmg",
+            "96DBZ92D3Y",
+        ));
+    }
     if !cfg!(windows) {
         return None;
     }
     match b {
-        Builder::Unity => Some(("https://public-cdn.cloud.unity3d.com/hub/prod/UnityHubSetup-x64.exe", "UnityHubSetup-x64.exe", "Unity Technologies")),
         Builder::Unreal => Some((
             "https://launcher-public-service-prod06.ol.epicgames.com/launcher/api/installer/download/EpicGamesLauncherInstaller.msi",
             "EpicGamesLauncherInstaller.msi",
@@ -881,13 +921,41 @@ pub fn run_installer(path: &Path) -> Result<(), ToolError> {
     let is_msi = path.extension().is_some_and(|e| e.eq_ignore_ascii_case("msi"));
     // It runs as long as the person needs (licence, location, sign-in), so no deadline: launched,
     // not supervised.
-    let launch = if is_msi { Launch::new("msiexec").arg("/i").arg(path) } else { Launch::new(path) };
+    let launch = if cfg!(target_os = "macos") {
+        Launch::new("/usr/bin/open").arg(path)
+    } else if is_msi {
+        Launch::new("msiexec").arg("/i").arg(path)
+    } else {
+        Launch::new(path)
+    };
     launch.label("the installer").remediation("Open the downloaded installer by hand, or get it from the official website.").start().map(|_| ())
 }
 
-/// Windows: the file carries a valid Authenticode signature from `org`. Elsewhere this can't be
-/// checked, so it refuses (the person gets the vendor's page instead).
+/// Verify the signed publisher. macOS also checks Gatekeeper's current assessment;
+/// no quarantine or security policy is changed.
 pub fn verify_publisher(path: &Path, org: &str) -> Result<(), ToolError> {
+    if cfg!(target_os = "macos") {
+        let requirement = format!("anchor apple generic and certificate leaf[subject.OU] = \"{org}\"");
+        let signed = Process::new("/usr/bin/codesign")
+            .args(["--verify", "--strict", "-R", &requirement])
+            .arg(path)
+            .timeout(std::time::Duration::from_secs(90))
+            .label("the installer signature check")
+            .run()?;
+        let assessed = Process::new("/usr/sbin/spctl")
+            .args(["--assess", "--type", "open", "--context", "context:primary-signature"])
+            .arg(path)
+            .timeout(std::time::Duration::from_secs(90))
+            .label("the installer security assessment")
+            .run()?;
+        if signed.success && assessed.success {
+            return Ok(());
+        }
+        return Err(ToolError::new(
+            ErrorCode::FileHashMismatch,
+            "The official launcher's signature or macOS security assessment failed, so it was not opened.",
+        ));
+    }
     if !cfg!(windows) {
         return Err(ToolError::new(ErrorCode::NotSupported, "Installer signatures can only be checked on Windows."));
     }
@@ -914,94 +982,10 @@ pub fn verify_publisher(path: &Path, org: &str) -> Result<(), ToolError> {
     }
 }
 
-/// Godot's release files for this OS: (zip name, the program inside it).
-fn godot_asset() -> Option<(String, String)> {
-    let v = GODOT_VERSION;
-    match std::env::consts::OS {
-        "windows" => Some((format!("Godot_v{v}_win64.exe.zip"), format!("Godot_v{v}_win64.exe"))),
-        "macos" => Some((format!("Godot_v{v}_macos.universal.zip"), "Godot.app".into())),
-        "linux" => Some((format!("Godot_v{v}_linux.x86_64.zip"), format!("Godot_v{v}_linux.x86_64"))),
-        _ => None,
-    }
-}
-
-/// Download Godot into the engine store, checked against the release's official SHA-512 list.
-/// Returns the editor program.
+/// Resolve the latest stable Godot release, verify its official asset hash, and publish it
+/// alongside older versions. Existing project engine paths remain valid.
 pub fn install_godot(store: &Path, cancel: Option<Cancel>, progress: &dyn Fn(u64, Option<u64>)) -> Result<PathBuf, ToolError> {
-    use sha2::{Digest, Sha512};
-    let (zip, program) = godot_asset().ok_or_else(|| ToolError::new(ErrorCode::NotSupported, "Godot can't be downloaded for this computer."))?;
-    let base = format!("https://github.com/godotengine/godot/releases/download/{GODOT_VERSION}");
-    // shortcut: the checksum list comes from the same release over HTTPS, which catches broken or
-    // swapped downloads but not a compromised release; pin the hash here to go further.
-    let mut sums = Vec::new();
-    crate::install::download_to(&format!("{base}/SHA512-SUMS.txt"), &mut sums, 1 << 20, cancel.as_ref(), &|_, _| {})?;
-    let sums = String::from_utf8_lossy(&sums);
-    let expected = sums
-        .lines()
-        .find_map(|l| l.split_once(char::is_whitespace).filter(|(_, f)| f.trim().trim_start_matches('*') == zip).map(|(h, _)| h.to_ascii_lowercase()))
-        .ok_or_else(|| ToolError::new(ErrorCode::FileHashMismatch, "Godot's checksum list doesn't mention this download."))?;
-    let dir = store.join("godot");
-    std::fs::create_dir_all(&dir).map_err(|e| ToolError::io(dir.display(), e))?;
-    let tmp = dir.join(format!(".{zip}.part"));
-    crate::install::download_file(&format!("{base}/{zip}"), &tmp, 512 << 20, cancel.as_ref(), progress)?;
-    let data = std::fs::read(&tmp).map_err(|e| ToolError::io(tmp.display(), e))?;
-    let _ = std::fs::remove_file(&tmp);
-    if hex::encode(Sha512::digest(&data)) != expected {
-        return Err(ToolError::new(ErrorCode::FileHashMismatch, "The Godot download didn't match its official checksum, so it wasn't used.")
-            .with_remediation("Try again, or get Godot from godotengine.org."));
-    }
-    crate::install::unpack_zip_into(&data, &dir, GODOT_MAX_FILE, cancel.as_ref())?;
-    let mut path = dir.join(&program);
-    if program == "Godot.app" && path.exists() {
-        path = name_macos_godot(&dir)?;
-    }
-    if !path.exists() {
-        return Err(ToolError::new(ErrorCode::GarbledOutput, "Godot was unpacked, but its program wasn't where we expected."));
-    }
-    Ok(if program.ends_with(".app") { path.join("Contents/MacOS/Godot") } else { path })
-}
-
-/// The macOS zip unpacks as `Godot.app`; the store finds editors by their `Godot_v<version>` name,
-/// so rename it to that. Returns the new path.
-fn name_macos_godot(dir: &Path) -> Result<PathBuf, ToolError> {
-    let from = dir.join("Godot.app");
-    let to = dir.join(format!("Godot_v{GODOT_VERSION}.app"));
-    // A reinstall finds the copy from the last install here, and rename can't replace a folder
-    // that isn't empty. Move the old copy aside (hidden, so the store ignores it) and put it back
-    // if the new one can't be moved in, so a failed reinstall keeps the working editor.
-    let backup = dir.join(format!(".Godot_v{GODOT_VERSION}.app.previous"));
-    // An archive that unpacks a `Godot.app` without the editor inside must not displace a working
-    // install, so check before anything is moved.
-    let exe = from.join("Contents/MacOS/Godot");
-    if !exe.is_file() {
-        let missing = std::io::Error::new(std::io::ErrorKind::NotFound, "the unpacked Godot.app has no editor executable");
-        return Err(ToolError::io(exe.display(), missing));
-    }
-    // An interrupted reinstall can leave only the hidden backup behind; bring it back first so it
-    // is treated as the previous install instead of staying unavailable.
-    let mut had_previous = to.exists();
-    if !had_previous && backup.exists() {
-        std::fs::rename(&backup, &to).map_err(|e| ToolError::io(backup.display(), e))?;
-        had_previous = true;
-    }
-    if had_previous {
-        match std::fs::remove_dir_all(&backup) {
-            Ok(()) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => return Err(ToolError::io(backup.display(), e)),
-        }
-        std::fs::rename(&to, &backup).map_err(|e| ToolError::io(to.display(), e))?;
-    }
-    if let Err(e) = std::fs::rename(&from, &to) {
-        if had_previous {
-            let _ = std::fs::rename(&backup, &to);
-        }
-        return Err(ToolError::io(from.display(), e));
-    }
-    if had_previous {
-        let _ = std::fs::remove_dir_all(&backup);
-    }
-    Ok(to)
+    Release::latest(Builder::Godot, cancel.as_ref())?.install(store, cancel, progress)
 }
 
 #[cfg(test)]
@@ -1334,63 +1318,6 @@ mod tests {
         assert_eq!(inv.engines.iter().filter(|i| i.builder == Builder::Unreal).count(), 2);
         assert!(!inv.cpp_tools, "an older engine's compiler cannot establish readiness for the selected engine");
         assert!(!inv.ready(Builder::Unreal));
-    }
-
-    #[test]
-    fn unpacked_macos_godot_is_found_in_the_store() {
-        let d = tempfile::tempdir().unwrap();
-        let store = d.path().join("store");
-        touch(&store.join("godot"), "Godot.app/Contents/MacOS/Godot", b"");
-        let renamed = name_macos_godot(&store.join("godot")).unwrap();
-        assert!(renamed.ends_with(format!("Godot_v{GODOT_VERSION}.app")));
-        let inv = inventory(&Places { store: store.clone(), ..Default::default() });
-        let godot = inv.best(Builder::Godot).expect("an unpacked Godot.app must be found");
-        assert_eq!(godot.version, "4.4.1");
-        assert!(godot.program.ends_with("Contents/MacOS/Godot"));
-
-        // A reinstall unpacks a new Godot.app over the one from the first install.
-        touch(&store.join("godot"), "Godot.app/Contents/MacOS/Godot", b"new");
-        touch(&store.join("godot"), &format!("Godot_v{GODOT_VERSION}.app/stale.txt"), b"old");
-        let again = name_macos_godot(&store.join("godot")).expect("a second install must not fail on the first copy");
-        assert!(!again.join("stale.txt").exists(), "the old copy is replaced");
-        assert_eq!(std::fs::read(again.join("Contents/MacOS/Godot")).unwrap(), b"new");
-    }
-
-    #[test]
-    fn failed_macos_reinstall_keeps_the_working_editor() {
-        let d = tempfile::tempdir().unwrap();
-        let dir = d.path().join("godot");
-        // The previous install is there, but the new download did not unpack a Godot.app.
-        touch(&dir, &format!("Godot_v{GODOT_VERSION}.app/stale.txt"), b"old");
-        assert!(name_macos_godot(&dir).is_err(), "no Godot.app to move in");
-        assert_eq!(std::fs::read(dir.join(format!("Godot_v{GODOT_VERSION}.app/stale.txt"))).unwrap(), b"old", "the working install is put back");
-        assert!(!dir.join(format!(".Godot_v{GODOT_VERSION}.app.previous")).exists());
-
-        // A Godot.app without the editor inside is just as unusable and must not replace it either.
-        touch(&dir, "Godot.app/Contents/Info.plist", b"");
-        assert!(name_macos_godot(&dir).is_err(), "no editor executable in the new app");
-        assert!(dir.join(format!("Godot_v{GODOT_VERSION}.app/stale.txt")).exists());
-        assert!(dir.join("Godot.app").exists(), "the download is left as it was");
-    }
-
-    #[test]
-    fn an_orphaned_macos_backup_is_recovered_before_a_failed_reinstall() {
-        let d = tempfile::tempdir().unwrap();
-        let dir = d.path().join("godot");
-        // A past reinstall was interrupted after the old copy was moved aside.
-        touch(&dir, &format!(".Godot_v{GODOT_VERSION}.app.previous/stale.txt"), b"old");
-        touch(&dir, "Godot.app/Contents/MacOS/Godot", b"new");
-        let installed = name_macos_godot(&dir).unwrap();
-        assert_eq!(std::fs::read(installed.join("Contents/MacOS/Godot")).unwrap(), b"new");
-        assert!(!dir.join(format!(".Godot_v{GODOT_VERSION}.app.previous")).exists());
-
-        // An archive without the editor is refused before anything, the backup included, is moved.
-        let d = tempfile::tempdir().unwrap();
-        let dir = d.path().join("godot");
-        touch(&dir, &format!(".Godot_v{GODOT_VERSION}.app.previous/stale.txt"), b"old");
-        touch(&dir, "Godot.app/Contents/Info.plist", b"");
-        assert!(name_macos_godot(&dir).is_err());
-        assert!(dir.join(format!(".Godot_v{GODOT_VERSION}.app.previous/stale.txt")).exists(), "an invalid archive leaves the backup alone");
     }
 
     #[test]

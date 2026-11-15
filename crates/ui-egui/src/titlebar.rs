@@ -124,6 +124,29 @@ fn window_button(ui: &mut Ui, icon: &str, tip: &str, close: bool) -> egui::Respo
     resp.on_hover_text(tr(tip))
 }
 
+fn caption(ui: &mut Ui, bar: egui::Rect, native_frame: bool) {
+    let ctx = ui.ctx().clone();
+    let mut rect = bar;
+    if native_frame {
+        rect.min.x += NATIVE_BUTTONS_WIDTH * scale(&ctx);
+    } else if !maximized(&ctx) {
+        rect.min.x += EDGE;
+        rect.max.x -= EDGE;
+        rect.min.y += EDGE;
+    }
+    // A click-only caption shares click ownership with its buttons, never a separate drag.
+    let response = ui.interact(rect, ui.id().with("titlebar-drag"), egui::Sense::click());
+    // egui's hit slop must not turn resize edges or native buttons into a caption press.
+    if !ctx.input(|i| i.pointer.interact_pos().is_some_and(|pos| rect.contains(pos))) {
+        return;
+    }
+    if response.double_clicked() {
+        ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(!maximized(&ctx)));
+    } else if response.is_pointer_button_down_on() && ctx.input(|i| i.pointer.primary_pressed()) {
+        ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
+    }
+}
+
 /// Draws the bar: the app mark and what's open on the left, the switches, settings and (off
 /// macOS) the window buttons on the right. Empty parts move the window; a double-click zooms it.
 pub fn show(app: &mut CraftApp, ui: &mut Ui) {
@@ -131,15 +154,7 @@ pub fn show(app: &mut CraftApp, ui: &mut Ui) {
     let ctx = ui.ctx().clone();
     let s = scale(&ctx);
     let bar = ui.max_rect();
-    // Empty parts of the bar move the window and double-click maximises. This is registered
-    // before the controls, so they get their own clicks.
-    let drag = ui.interact(bar, ui.id().with("titlebar-drag"), egui::Sense::click_and_drag());
-    if edge_at(&ctx).is_none() && drag.drag_started_by(egui::PointerButton::Primary) {
-        ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
-    }
-    if drag.double_clicked() {
-        ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(!maximized(&ctx)));
-    }
+    caption(ui, bar, NATIVE_FRAME);
     ui.painter().hline(bar.x_range(), bar.bottom() - 0.5 * s, theme::line(theme::HAIRLINE * s, t.separator));
     // A download anywhere in the app fills the bottom edge of the bar, on every screen.
     let download = crate::engine_ui::global_download(app);
@@ -216,22 +231,23 @@ pub fn show(app: &mut CraftApp, ui: &mut Ui) {
             if !app.settings.first_run_done {
                 return;
             }
-            // Simple mode keeps the bar to the essentials: Settings is in the sidebar, the mode
-            // switch and AI picker are in Settings, and the Clean room switch stays in view.
-            if app.beginner() {
-                deep_toggle(app, ui);
-                usage_pill(app, ui);
-                return;
+            if !app.beginner() {
+                if icons::button_scaled(ui, "settings", CONTROL, s, app.state.settings_open, "Settings").clicked() {
+                    app.state.settings_open = !app.state.settings_open;
+                }
+                rule(ui);
             }
-            if icons::button_scaled(ui, "settings", CONTROL, s, app.state.settings_open, "Settings").clicked() {
-                app.state.settings_open = !app.state.settings_open;
-            }
-            rule(ui);
             let sel = usize::from(app.mode() == Mode::Experienced);
             if let Some(i) = widgets::segmented_scaled(ui, &["Simple", "Advanced"], sel, CONTROL - 2.0, theme::SMALL, s) {
                 app.set_mode(if i == 0 { Mode::Beginner } else { Mode::Experienced });
             }
             rule(ui);
+            // Simple keeps Settings in the sidebar, but mode switching is always in reach.
+            if app.beginner() {
+                deep_toggle(app, ui);
+                usage_pill(app, ui);
+                return;
+            }
             deep_toggle(app, ui);
             usage_pill(app, ui);
             if app.jobs.busy() {
@@ -327,5 +343,121 @@ fn deep_toggle(app: &mut CraftApp, ui: &mut Ui) {
     });
     if resp.clicked() {
         app.set_deep(!deep);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use egui_kittest::{Harness, kittest::Queryable};
+
+    fn commands<S>(h: &Harness<'_, S>) -> Vec<egui::ViewportCommand> {
+        h.output().viewport_output.values().flat_map(|v| v.commands.iter().cloned()).collect()
+    }
+
+    fn pointer<S>(h: &mut Harness<'_, S>, pos: egui::Pos2, button: egui::PointerButton, pressed: bool) -> Vec<egui::ViewportCommand> {
+        h.input_mut().events.extend([egui::Event::PointerMoved(pos), egui::Event::PointerButton { pos, button, pressed, modifiers: egui::Modifiers::NONE }]);
+        h.step();
+        commands(h)
+    }
+
+    fn no_window_gesture(commands: &[egui::ViewportCommand]) {
+        assert!(!commands.iter().any(|c| matches!(c, egui::ViewportCommand::StartDrag | egui::ViewportCommand::Maximized(_))), "{commands:?}");
+    }
+
+    fn caption_harness(native_frame: bool) -> Harness<'static> {
+        Harness::builder().with_step_dt(1.0 / 60.0).with_size(Vec2::new(640.0, 80.0)).build_ui(move |ui| {
+            caption(ui, egui::Rect::from_min_size(egui::Pos2::ZERO, Vec2::new(640.0, 40.0)), native_frame);
+        })
+    }
+
+    #[test]
+    fn caption_starts_drag_on_primary_press_without_a_movement_threshold() {
+        let mut h = caption_harness(false);
+        h.run_steps(2);
+        let pos = egui::pos2(300.0, 20.0);
+        assert!(pointer(&mut h, pos, egui::PointerButton::Primary, true).contains(&egui::ViewportCommand::StartDrag));
+        h.input_mut().events.push(egui::Event::PointerMoved(pos + Vec2::new(30.0, 0.0)));
+        h.step();
+        assert!(!commands(&h).contains(&egui::ViewportCommand::StartDrag), "a held press must not restart the OS drag");
+        no_window_gesture(&pointer(&mut h, pos + Vec2::new(30.0, 0.0), egui::PointerButton::Primary, false));
+    }
+
+    #[test]
+    fn caption_preserves_double_click_maximize_and_ignores_secondary_press() {
+        let mut h = caption_harness(false);
+        h.run_steps(2);
+        let pos = egui::pos2(300.0, 20.0);
+        no_window_gesture(&pointer(&mut h, pos, egui::PointerButton::Secondary, true));
+        no_window_gesture(&pointer(&mut h, pos, egui::PointerButton::Secondary, false));
+        let mut h = caption_harness(false);
+        h.run_steps(2);
+        pointer(&mut h, pos, egui::PointerButton::Primary, true);
+        pointer(&mut h, pos, egui::PointerButton::Primary, false);
+        pointer(&mut h, pos, egui::PointerButton::Primary, true);
+        assert!(pointer(&mut h, pos, egui::PointerButton::Primary, false).contains(&egui::ViewportCommand::Maximized(true)));
+    }
+
+    #[test]
+    fn caption_leaves_resize_edges_and_macos_traffic_lights_to_the_window() {
+        for (native, pos) in [(false, egui::pos2(2.0, 20.0)), (false, egui::pos2(300.0, 2.0)), (false, egui::pos2(638.0, 20.0)), (true, egui::pos2(40.0, 20.0))]
+        {
+            let mut h = caption_harness(native);
+            h.run_steps(2);
+            no_window_gesture(&pointer(&mut h, pos, egui::PointerButton::Primary, true));
+            no_window_gesture(&pointer(&mut h, pos, egui::PointerButton::Primary, false));
+        }
+    }
+
+    #[test]
+    fn window_buttons_keep_their_clicks_without_dragging_the_caption() {
+        for (icon, name, close) in [("x", "Close", true), ("square", "Maximise", false), ("minus", "Minimise", false)] {
+            let mut h = Harness::builder().with_size(Vec2::new(640.0, 80.0)).build_ui_state(
+                move |ui, clicked| {
+                    caption(ui, egui::Rect::from_min_size(egui::Pos2::ZERO, Vec2::new(640.0, 40.0)), false);
+                    if window_button(ui, icon, name, close).clicked() {
+                        *clicked = true;
+                    }
+                },
+                false,
+            );
+            h.run_steps(2);
+            let pos = h.get_by_label(&tr(name)).rect().center();
+            no_window_gesture(&pointer(&mut h, pos, egui::PointerButton::Primary, true));
+            no_window_gesture(&pointer(&mut h, pos, egui::PointerButton::Primary, false));
+            assert!(*h.state(), "{name} must receive its own click");
+        }
+    }
+
+    #[test]
+    fn both_modes_offer_immediate_switching_without_window_gestures() {
+        for initial in [Mode::Beginner, Mode::Experienced] {
+            let app = crate::demo::app(crate::demo::engine(initial, true));
+            let mut h = Harness::builder().with_size(Vec2::new(1280.0, 80.0)).build_ui_state(
+                |ui, (app, ready)| {
+                    if !*ready {
+                        CraftApp::setup_context(ui.ctx());
+                        *ready = true;
+                        return;
+                    }
+                    bar(app, ui);
+                },
+                (app, false),
+            );
+            h.run_steps(3);
+            assert!(h.query_by_label(&tr("Simple")).is_some());
+            assert!(h.query_by_label(&tr("Advanced")).is_some());
+            assert_eq!(h.query_by_label(&tr("Settings")).is_some(), initial == Mode::Experienced, "Simple keeps Settings in the sidebar");
+            let (target, name) = if initial == Mode::Beginner { (Mode::Experienced, "Advanced") } else { (Mode::Beginner, "Simple") };
+            let pos = h.get_by_label(&tr(name)).rect().center();
+            no_window_gesture(&pointer(&mut h, pos, egui::PointerButton::Primary, true));
+            no_window_gesture(&pointer(&mut h, pos, egui::PointerButton::Primary, false));
+            assert_eq!(h.state().0.mode(), target);
+            h.run_steps(2);
+            let pos = h.get_by_label(&tr(name)).rect().center();
+            no_window_gesture(&pointer(&mut h, pos, egui::PointerButton::Primary, true));
+            no_window_gesture(&pointer(&mut h, pos, egui::PointerButton::Primary, false));
+            assert_eq!(h.state().0.mode(), target);
+        }
     }
 }

@@ -182,6 +182,11 @@ pub enum Done {
     },
     /// The game engines on this computer were listed.
     GameEngines(craft_anything_engines::game::Inventory),
+    GameEngineRelease {
+        builder: craft_anything_engines::game::Builder,
+        result: Result<craft_anything_engines::game::Release, String>,
+    },
+    UnitySetup(Result<craft_anything_engines::game::UnityStatus, String>),
     /// What engine made the game at `path`.
     GameFound {
         path: PathBuf,
@@ -371,6 +376,7 @@ pub struct CraftApp {
     pub(crate) updates: updates::Updates,
     pub engine: Arc<Engine>,
     pub hub: Arc<AiHub>,
+    pub(crate) services: craft_anything_engine::session::ToolServices,
     pub state: UiState,
     /// The UI's copy of the settings; pushed into the session (and saved) when changed.
     pub settings: Settings,
@@ -465,6 +471,10 @@ pub struct CraftApp {
     /// When each toast appeared, in the same order (confirmations hide after a few seconds).
     toast_at: Vec<Instant>,
     settings_dirty: bool,
+    settings_baseline: Settings,
+    settings_path: PathBuf,
+    pending_settings: craft_anything_engine::settings::SettingsPatch,
+    saving_settings: Option<craft_anything_engine::settings::SettingsPatch>,
     /// When to write the settings to disk: a moment after the last change, so typing a path
     /// saves once, not once per letter.
     save_due: Option<Instant>,
@@ -501,7 +511,10 @@ impl CraftApp {
     pub fn new(engine: Arc<Engine>, hub: Arc<AiHub>) -> Self {
         // Wait for the engine if it's busy: defaults here would show Clean room and no AI, and the
         // next settings change would save them over the person's own.
-        let settings = engine.session().settings.clone();
+        let (settings, services, settings_path) = {
+            let session = engine.session();
+            (session.settings.clone(), craft_anything_engine::session::ToolServices::capture(&session), session.config_dir().join("config.toml"))
+        };
         i18n::set_language(&settings.language);
         let mut app = CraftApp {
             #[cfg(not(target_arch = "wasm32"))]
@@ -509,7 +522,10 @@ impl CraftApp {
             engine,
             hub,
             state: UiState::default(),
+            settings_baseline: settings.clone(),
+            settings_path,
             settings,
+            services,
             first_frames: None,
             persist: true,
             headless: false,
@@ -559,6 +575,8 @@ impl CraftApp {
             ghidra: Default::default(),
             toast_at: Vec::new(),
             settings_dirty: false,
+            pending_settings: Default::default(),
+            saving_settings: None,
             save_due: None,
             saving: None,
             creating: None,
@@ -630,7 +648,15 @@ impl CraftApp {
         if let Some(d) = p.make {
             self.state.make = d;
         }
-        self.state.unsent = p.unsent.into_iter().map(|(root, text)| (root, (text, Vec::new()))).collect();
+        self.state.unsent.clear();
+        for (root, text) in p.unsent {
+            let root = std::fs::canonicalize(&root).unwrap_or(root);
+            let saved = self.state.unsent.entry(root).or_default();
+            if !saved.0.is_empty() && !text.is_empty() {
+                saved.0.push_str("\n\n");
+            }
+            saved.0.push_str(&text);
+        }
         // Back to the project that was open, with its conversation, if it's still there.
         if let Some(ws) = p.last_project.and_then(|root| craft_anything_engine::workspace::Workspace::open(&root).ok()) {
             self.open_workspace(ws);
@@ -728,21 +754,34 @@ impl CraftApp {
     /// Changed settings go into the session at once, and to disk a moment after the last change.
     fn flush_settings(&mut self, ctx: &egui::Context) {
         const QUIET: Duration = Duration::from_millis(600);
-        if self.settings_dirty
-            && let Some(mut s) = self.engine.try_session()
-        {
-            // The Ghidra folder changed: look for it again.
-            if s.settings.engines.ghidra.install_dir != self.settings.engines.ghidra.install_dir {
-                self.ghidra.ready = None;
-            }
-            // The `ai` table belongs to the ai crate (it edits it in the session); keep its copy.
-            self.settings.ai = s.settings.ai.clone();
-            s.settings = self.settings.clone();
-            drop(s);
-            self.settings_dirty = false;
-            self.view_dirty = true;
-            if self.persist {
-                self.save_due = Some(Instant::now() + QUIET);
+        if self.settings_dirty {
+            let pushed = (|| -> Result<bool, ToolError> {
+                let Some(mut session) = self.engine.try_session() else { return Ok(false) };
+                if session.settings.engines.ghidra.install_dir != self.settings.engines.ghidra.install_dir {
+                    self.ghidra.ready = None;
+                }
+                let mut edited = self.settings.clone();
+                edited.ai = self.settings_baseline.ai.clone();
+                let changes = craft_anything_engine::settings::SettingsPatch::between(&self.settings_baseline, &edited)?;
+                changes.apply(&mut session.settings)?;
+                self.pending_settings.merge(changes);
+                self.settings = session.settings.clone();
+                self.settings_baseline = self.settings.clone();
+                Ok(true)
+            })();
+            match pushed {
+                Ok(true) => {
+                    self.settings_dirty = false;
+                    self.view_dirty = true;
+                    if self.persist {
+                        self.save_due = Some(Instant::now() + QUIET);
+                    }
+                }
+                Ok(false) => {}
+                Err(e) => {
+                    self.toast(e.message, true);
+                    return;
+                }
             }
         }
         let Some(due) = self.save_due.filter(|_| self.saving.is_none()) else { return };
@@ -753,13 +792,23 @@ impl CraftApp {
         }
         self.save_due = None;
         let engine = self.engine.clone();
-        // What's in the session when it runs, so the newest settings are the ones written.
-        self.saving = Some(self.jobs.spawn("Save settings", false, move |_| {
-            // Keep the guard through the write so a model-selection save cannot be overtaken
-            // by an older settings snapshot. This runs on the worker, never the UI thread.
-            let session = engine.session();
+        let patch = std::mem::take(&mut self.pending_settings);
+        if patch.is_empty() {
+            return;
+        }
+        self.saving_settings = Some(patch.clone());
+        self.saving = Some(self.jobs.spawn("Save settings", false, move |job| {
+            let mut session = engine.session();
             session.label("Save settings");
-            session.settings.save().map_err(|e| e.message)?;
+            let path = session.config_dir().join("config.toml");
+            let next = session
+                .settings
+                .update_to(&path, |current| {
+                    job.cancel.check()?;
+                    patch.apply(current)
+                })
+                .map_err(|e| e.message)?;
+            session.settings = next;
             Ok(Done::Nothing)
         }));
     }
@@ -803,6 +852,7 @@ impl CraftApp {
             return;
         }
         let Some(s) = self.engine.try_session() else { return };
+        self.services = craft_anything_engine::session::ToolServices::capture(&s);
         let targets = s
             .targets()
             .map(|t| TargetInfo {
@@ -957,10 +1007,13 @@ impl CraftApp {
             ("plugins_add" | "plugins_remove", Ok(_)) => {
                 if let Some(s) = self.engine.try_session() {
                     self.settings.plugins = s.settings.plugins.clone();
+                    self.services = craft_anything_engine::session::ToolServices::capture(&s);
                 }
                 self.toast(tr(if tool == "plugins_add" { "Plugin added. Read its tools to start using them." } else { "Plugin removed." }), false);
             }
             ("plugins_refresh", Ok(v)) => {
+                self.view_dirty = true;
+                self.refresh_view();
                 let failed: Vec<String> = v["refreshed"]
                     .as_array()
                     .into_iter()
@@ -1236,7 +1289,7 @@ impl CraftApp {
             } else {
                 text
             };
-            c.send(&sent);
+            c.send(&craft_anything_ai::prompt::with_response_language(&sent, &i18n::language()));
             return;
         }
         if self.view.active.is_none() {
@@ -1371,6 +1424,14 @@ impl CraftApp {
         let job = done.job;
         if self.saving == Some(job) {
             self.saving = None;
+            if done.result.is_err()
+                && let Some(mut failed) = self.saving_settings.take()
+            {
+                failed.merge(std::mem::take(&mut self.pending_settings));
+                self.pending_settings = failed;
+            } else {
+                self.saving_settings = None;
+            }
         }
         if self.creating == Some(job) {
             self.creating = None;
@@ -1531,6 +1592,8 @@ impl CraftApp {
             Done::PicturesChecked { files, refused, target } => self.pictures_checked(files, refused, target),
             Done::Attached { root, text, attachments, files } => self.deliver(root, text, attachments, files),
             Done::GameEngines(inv) => self.engines_found(inv),
+            Done::GameEngineRelease { builder, result } => self.engine_release_found(builder, result),
+            Done::UnitySetup(result) => self.unity_setup_finished(result),
             Done::GameFound { path, found } => {
                 // Only if that game is still the one picked.
                 if self.state.make.target == (craft_anything_engine::workspace::TargetRef::Local { path }) {
@@ -1945,26 +2008,23 @@ impl eframe::App for CraftApp {
             j.cancel.cancel();
         }
         craft_anything_engine::tools::deep::stop_analyses(std::time::Duration::from_secs(12));
-        // A change not written yet (or one being written as the window closed) is written now.
-        if self.persist && (self.settings_dirty || self.save_due.is_some() || self.saving.is_some()) {
-            let saved = if let Some(mut session) = self.engine.try_session() {
-                session.label("Save settings on exit");
-                // AI changes belong to the session; keep the app's other pending edits.
-                self.settings.ai = session.settings.ai.clone();
-                session.settings = self.settings.clone();
-                session.settings.save().is_ok()
-            } else {
-                false
-            };
-            if saved {
-                // This full save supersedes any deferred edits left by a failed recovery.
-                if let Err(e) = Settings::discard_pending(&Settings::path()) {
-                    log::error!("Couldn't discard superseded settings on exit: {}", e.message);
+        // Only the person's pending fields are saved; a build may have changed other settings.
+        if self.persist {
+            let mut patch = self.saving_settings.take().unwrap_or_default();
+            patch.merge(std::mem::take(&mut self.pending_settings));
+            let mut edited = self.settings.clone();
+            edited.ai = self.settings_baseline.ai.clone();
+            match craft_anything_engine::settings::SettingsPatch::between(&self.settings_baseline, &edited) {
+                Ok(changes) => patch.merge(changes),
+                Err(e) => log::error!("Couldn't prepare settings edits on exit: {}", e.message),
+            }
+            if !patch.is_empty()
+                && let Err(e) = self.settings.update_to(&self.settings_path, |current| patch.apply(current))
+            {
+                log::error!("Couldn't save settings edits on exit: {}", e.message);
+                if let Err(e) = patch.defer_to(&self.settings_path) {
+                    log::error!("Couldn't keep pending settings edits: {}", e.message);
                 }
-            } else if let Err(e) = self.settings.defer_save_to(&Settings::path()) {
-                // A tool can hold the session for hours. Keep edits separately for startup recovery;
-                // never race its eventual save by merging a disk snapshot into config.toml here.
-                log::error!("Couldn't keep pending settings on exit: {}", e.message);
             }
         }
     }

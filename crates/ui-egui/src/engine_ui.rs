@@ -2,16 +2,15 @@
 //! Godot" dialog, the engines list in Settings, and the download progress shown everywhere. Also a
 //! game's generated-assets switch and the fal.ai key it needs.
 //!
-//! Craft Anything downloads only what it can check (Godot against its official checksums; Unity
-//! Hub and the Epic Games Launcher against their vendors' signatures). Sign-in, licences and the
-//! engines themselves stay in the vendors' own apps, with the person.
+//! Engine downloads use official release metadata and checksums. Vendor authentication and
+//! licence decisions stay with the person; an opened launcher is not an installed engine.
 
 use crate::i18n::{tr, trf};
 use crate::state::{MakeDraft, Modal, Screen};
 use crate::theme::{self, Tokens, size, space};
 use crate::{CraftApp, Done, icons, widgets};
 use craft_anything_ai::rebuild::KindRegistry;
-use craft_anything_engine::{CallOptions, Caller};
+use craft_anything_engine::{CallOptions, Caller, Consent};
 use craft_anything_engines::assets::{AssetProvider, AssetProviders, fal};
 use craft_anything_engines::game::{self, Builder, Inventory};
 use craft_anything_engines::ghidra::{self, get};
@@ -33,9 +32,87 @@ pub struct Flow {
     pub installer_opened: Vec<Builder>,
     /// Start the waiting project once the engine is ready.
     pub start_after: bool,
+    pub release: ReleaseState,
+    pub unity: UnitySetupState,
+    pub personal_eligible: bool,
+    pub personal_terms: bool,
+}
+
+#[derive(Debug, Default)]
+pub enum ReleaseState {
+    #[default]
+    Unchecked,
+    Checking {
+        builder: Builder,
+        job: u64,
+    },
+    Available(game::Release),
+    Failed {
+        builder: Builder,
+        message: String,
+    },
+}
+
+#[derive(Debug, Default)]
+pub enum UnitySetupState {
+    #[default]
+    Unchecked,
+    Working(u64),
+    Checked(game::UnityStatus),
+    Failed(String),
 }
 
 impl CraftApp {
+    pub fn unity_usable(&self) -> bool {
+        matches!(&self.engine_flow.unity, UnitySetupState::Checked(status) if status.licensed)
+    }
+
+    pub fn start_unity_setup(&mut self, action: game::UnityAction) {
+        if matches!(self.engine_flow.unity, UnitySetupState::Working(_)) || self.engine_flow.job.is_some_and(|(builder, _)| builder == Builder::Unity) {
+            return;
+        }
+        let personal = self.engine_flow.personal_eligible && self.engine_flow.personal_terms;
+        if action == game::UnityAction::ActivatePersonal && !personal {
+            return;
+        }
+        // Every activation must be freshly confirmed, including after a failure or cancellation.
+        self.engine_flow.personal_eligible = false;
+        self.engine_flow.personal_terms = false;
+        let engine = self.engine.clone();
+        let job = self.jobs.spawn(tr("Unity account and licence setup"), true, move |j| {
+            let progress = j.reporter();
+            let opts = CallOptions::new(Caller::Ui).with_consent(Consent::Granted).with_cancel(j.cancel.clone()).with_progress(&progress);
+            let result = engine
+                .call(
+                    "engines_unity_setup",
+                    serde_json::json!({
+                        "action":action, "personal_eligibility_and_terms_confirmed":personal
+                    }),
+                    opts,
+                )
+                .and_then(|output| {
+                    let data = output.to_json();
+                    serde_json::from_value::<game::UnityStatus>(data.get("result").cloned().unwrap_or_default()).map_err(|_| {
+                        craft_anything_engine::evidence::ToolError::new(
+                            craft_anything_engine::evidence::ErrorCode::GarbledOutput,
+                            "Unity setup returned an unreadable status.",
+                        )
+                    })
+                })
+                .map_err(|e| e.for_people());
+            Ok(Done::UnitySetup(result))
+        });
+        self.engine_flow.unity = UnitySetupState::Working(job);
+    }
+
+    pub fn unity_setup_finished(&mut self, result: Result<game::UnityStatus, String>) {
+        self.engine_flow.unity = match result {
+            Ok(status) => UnitySetupState::Checked(status),
+            Err(message) => UnitySetupState::Failed(message),
+        };
+        self.refresh_game_engines();
+    }
+
     /// Look for game engines again (in the background; skipped while a look is running).
     pub fn refresh_game_engines(&mut self) {
         if self.engine_flow.checking || self.headless {
@@ -47,9 +124,50 @@ impl CraftApp {
     }
 
     pub fn engines_found(&mut self, inv: Inventory) {
+        let resume = match self.state.modal {
+            Some(Modal::Engine(builder))
+                if builder != Builder::Unreal
+                    && (builder != Builder::Unity || self.unity_usable())
+                    && self.engine_flow.start_after
+                    && self.engine_flow.job.is_none()
+                    && inv.ready(builder) =>
+            {
+                Some(builder)
+            }
+            _ => None,
+        };
         self.game_engines = Some(inv);
         self.engine_flow.checking = false;
         self.engine_flow.checked_at = Some(Instant::now());
+        if let Some(builder) = resume {
+            self.engine_flow.start_after = false;
+            self.state.make.builder = Some(builder);
+            self.state.modal = None;
+            self.start_make();
+        }
+    }
+
+    pub fn check_engine_release(&mut self, builder: Builder) {
+        if matches!(self.engine_flow.release, ReleaseState::Checking { .. }) || builder == Builder::Unreal || self.headless {
+            return;
+        }
+        let job = self.jobs.spawn(tr("Check for updates"), false, move |j| {
+            let c = j.cancel.clone();
+            let cancel: craft_anything_platform::process::Cancel = Arc::new(move || c.is_cancelled());
+            let result = game::Release::latest(builder, Some(&cancel)).map_err(|e| e.for_people());
+            Ok(Done::GameEngineRelease { builder, result })
+        });
+        self.engine_flow.release = ReleaseState::Checking { builder, job };
+    }
+
+    pub fn engine_release_found(&mut self, builder: Builder, result: Result<game::Release, String>) {
+        if !matches!(self.engine_flow.release, ReleaseState::Checking { builder: b, .. } if b == builder) {
+            return;
+        }
+        self.engine_flow.release = match result {
+            Ok(release) => ReleaseState::Available(release),
+            Err(message) => ReleaseState::Failed { builder, message },
+        };
     }
 
     /// Look up which engine made the game the person just picked.
@@ -61,33 +179,45 @@ impl CraftApp {
         });
     }
 
-    /// Start getting `b`: download what we can check, else open the vendor's page.
-    pub fn get_engine(&mut self, b: Builder, ctx: &egui::Context) {
-        if self.engine_flow.job.is_some() {
+    /// Install the displayed stable candidate, or open the verified vendor launcher installer.
+    pub fn get_engine(&mut self, b: Builder, _ctx: &egui::Context) {
+        if self.engine_flow.job.is_some() || (b == Builder::Unity && matches!(self.engine_flow.unity, UnitySetupState::Working(_))) {
             return;
         }
+        let version = match &self.engine_flow.release {
+            ReleaseState::Available(release) if release.builder == b => Some(release.version.clone()),
+            _ if b != Builder::Unreal => {
+                self.check_engine_release(b);
+                return;
+            }
+            _ => None,
+        };
         // Installs go through the engines_install tool, as they do from the CLI or an agent.
-        let install = |engine: &Arc<craft_anything_engine::Engine>, id: &'static str, j: &crate::jobs::JobCtx| {
+        let install = move |engine: &Arc<craft_anything_engine::Engine>, id: &'static str, j: &crate::jobs::JobCtx| {
             let progress = j.reporter();
-            let opts = CallOptions::new(Caller::Ui).with_cancel(j.cancel.clone()).with_progress(&progress);
-            engine.call("engines_install", serde_json::json!({"engine": id}), opts).map(|_| ()).map_err(|e| e.for_people())
+            let opts = CallOptions::new(Caller::Ui).with_consent(Consent::Granted).with_cancel(j.cancel.clone()).with_progress(&progress);
+            engine.call("engines_install", serde_json::json!({"engine": id, "version": version}), opts).map(|_| ()).map_err(|e| e.for_people())
         };
         let engine = self.engine.clone();
         let id = match b {
-            Builder::Godot => self.jobs.spawn(tr("Getting Godot"), true, move |j| {
-                install(&engine, "godot", j)?;
-                Ok(Done::EngineGot { builder: b, installer: false })
-            }),
-            Builder::Unity | Builder::Unreal if game::installer(b).is_some() => {
-                let title = if b == Builder::Unity { tr("Getting Unity Hub") } else { tr("Getting the Epic Games Launcher") };
-                let tool_id = if b == Builder::Unity { "unity" } else { "unreal" };
+            Builder::Godot | Builder::Rust | Builder::Unity => {
+                let title = trf("Getting {name}", &[("name", b.name())]);
+                let tool_id = match b {
+                    Builder::Godot => "godot",
+                    Builder::Rust => "rust",
+                    _ => "unity",
+                };
                 self.jobs.spawn(title, true, move |j| {
                     install(&engine, tool_id, j)?;
-                    Ok(Done::EngineGot { builder: b, installer: true })
+                    Ok(Done::EngineGot { builder: b, installer: false })
                 })
             }
+            Builder::Unreal if game::installer(b).is_some() => self.jobs.spawn(tr("Getting the Epic Games Launcher"), true, move |j| {
+                install(&engine, "unreal", j)?;
+                Ok(Done::EngineGot { builder: b, installer: true })
+            }),
             _ => {
-                ctx.open_url(egui::OpenUrl::new_tab(game::download_page(b)));
+                self.toast(tr("The official launcher must be installed first."), true);
                 return;
             }
         };
@@ -101,6 +231,8 @@ impl CraftApp {
                 self.engine_flow.installer_opened.push(b);
             }
             self.toast(tr("The installer is open. Follow its steps, then come back here."), false);
+        } else if b == Builder::Unity && !self.unity_usable() {
+            self.toast(tr("Unity is installed. Complete account and licence setup before building."), false);
         } else {
             self.toast(trf("{name} is ready.", &[("name", b.name())]), false);
         }
@@ -147,7 +279,7 @@ impl CraftApp {
         let engine = self.engine.clone();
         let id = self.jobs.spawn(tr("Getting Ghidra"), true, move |j| {
             let progress = j.reporter();
-            let opts = CallOptions::new(Caller::Ui).with_cancel(j.cancel.clone()).with_progress(&progress);
+            let opts = CallOptions::new(Caller::Ui).with_consent(Consent::Granted).with_cancel(j.cancel.clone()).with_progress(&progress);
             engine.call("engines_install", serde_json::json!({"engine": "ghidra"}), opts).map_err(|e| e.for_people())?;
             Ok(Done::GhidraGot)
         });
@@ -691,7 +823,16 @@ fn status_line(app: &mut CraftApp, ui: &mut Ui, b: Builder, offer: bool) {
             icons::show(ui, "check", size::ICON, t.success);
             let v = inv.best(b).map(|i| i.version.clone()).unwrap_or_default();
             let what = if v.is_empty() { b.name().to_string() } else { format!("{} {v}", b.name()) };
-            ui.label(RichText::new(trf("Ready: {what} is on this computer.", &[("what", &what)])).color(t.text_dim).size(theme::SMALL));
+            let text = if b == Builder::Unity && !app.unity_usable() {
+                trf("Installed: {versions}", &[("versions", &what)])
+            } else {
+                trf("Ready: {what} is on this computer.", &[("what", &what)])
+            };
+            ui.label(RichText::new(text).color(t.text_dim).size(theme::SMALL));
+            if offer && widgets::secondary(ui, Some("download"), &tr("Versions and updates")).clicked() {
+                app.state.settings_open = false;
+                app.state.modal = Some(Modal::Engine(b));
+            }
         }
         Some(inv) => {
             icons::show(ui, "download", size::ICON, t.warning);
@@ -729,37 +870,7 @@ fn steps(app: &CraftApp, b: Builder, inv: &Inventory) -> Vec<Step> {
     let direct = game::installer(b).is_some();
     let step = |title: &str, detail: &str, done: bool, action: Option<Action>| Step { title: tr(title), detail: tr(detail), done, action };
     match b {
-        Builder::Godot => vec![step(
-            &trf("Download Godot {v}", &[("v", game::GODOT_VERSION.trim_end_matches("-stable"))]),
-            "Checked against Godot's official checksums before it's used.",
-            inv.ready(b),
-            Some(Action::Download),
-        )],
-        Builder::Rust => {
-            vec![step("Install Rust", "Follow the steps on rustup.rs, then come back here.", inv.ready(b), Some(Action::OpenPage(game::download_page(b))))]
-        }
-        Builder::Unity => {
-            let hub = inv.unity_hub.clone();
-            let mut v = Vec::new();
-            if direct {
-                v.push(step(
-                    "Download Unity Hub",
-                    "Unity's own installer. It only opens if Unity's signature checks out.",
-                    hub.is_some() || opened,
-                    Some(Action::Download),
-                ));
-                v.push(step("Install Unity Hub", "Follow the installer that opened. Come back here when it's done.", hub.is_some(), None));
-            } else {
-                v.push(step("Get Unity Hub", "Download it from unity.com and install it.", hub.is_some(), Some(Action::OpenPage(game::download_page(b)))));
-            }
-            v.push(step(
-                "Sign in and add the Unity Editor",
-                "In Unity Hub: sign in (or make a free account) and accept the free Personal licence. Then open Installs, press Install Editor and choose the recommended version. About 10 GB.",
-                inv.best(b).is_some(),
-                hub.map(Action::OpenApp),
-            ));
-            v
-        }
+        Builder::Godot | Builder::Rust | Builder::Unity => Vec::new(),
         Builder::Unreal => {
             let launcher = inv.epic_launcher.clone();
             let mut v = Vec::new();
@@ -772,12 +883,7 @@ fn steps(app: &CraftApp, b: Builder, inv: &Inventory) -> Vec<Step> {
                 ));
                 v.push(step("Install the launcher", "Follow the installer that opened. Come back here when it's done.", launcher.is_some(), None));
             } else {
-                v.push(step(
-                    "Get the Epic Games Launcher",
-                    "Download it from unrealengine.com and install it.",
-                    launcher.is_some(),
-                    Some(Action::OpenPage(game::download_page(b))),
-                ));
+                v.push(step("Get the Epic Games Launcher", "The official launcher installer is not available on this operating system.", false, None));
             }
             v.push(step(
                 "Sign in and install Unreal Engine",
@@ -789,6 +895,143 @@ fn steps(app: &CraftApp, b: Builder, inv: &Inventory) -> Vec<Step> {
             v.push(step(title, detail, inv.cpp_tools, page.map(Action::OpenPage)));
             v
         }
+    }
+}
+fn unity_setup_panel(app: &mut CraftApp, ui: &mut Ui) {
+    ui.add_space(space::M);
+    ui.label(tr("Unity account and licence"));
+    let state = std::mem::take(&mut app.engine_flow.unity);
+    let mut action = None;
+    match &state {
+        UnitySetupState::Working(id) => {
+            if let Some(job) = app.jobs.running().find(|job| job.id == *id) {
+                ui.label(tr("Complete the official Unity step in your browser. This app is waiting."));
+                if widgets::secondary(ui, None, &tr("Cancel")).clicked() {
+                    job.cancel.cancel();
+                }
+            } else {
+                action = widgets::secondary(ui, None, &tr("Check Unity setup")).clicked().then_some(game::UnityAction::Check);
+            }
+        }
+        UnitySetupState::Unchecked => {
+            ui.label(tr("Installed does not mean licensed. Check Unity setup before building."));
+            action = widgets::secondary(ui, None, &tr("Check Unity setup")).clicked().then_some(game::UnityAction::Check);
+        }
+        UnitySetupState::Failed(message) => {
+            ui.label(message);
+            action = widgets::secondary(ui, None, &tr("Check Unity setup")).clicked().then_some(game::UnityAction::Check);
+        }
+        UnitySetupState::Checked(status) => {
+            if status.licensed {
+                ui.label(tr("Unity reports a usable licence."));
+            } else if !status.signed_in {
+                ui.label(tr("Sign in with Unity's official browser. Craft Anything does not read your password or adopt your Hub account."));
+                action = widgets::primary_icon(ui, Some("external-link"), &tr("Sign in to Unity"), true).clicked().then_some(game::UnityAction::Login);
+            } else {
+                ui.label(tr("Signed in. Choose your own licence. No licence is selected or accepted automatically."));
+                ui.hyperlink_to(tr("Official Unity Personal eligibility"), "https://unity.com/products/unity-personal");
+                ui.hyperlink_to(tr("Official Unity Editor terms"), "https://unity.com/legal/editor-terms-of-service/software");
+                ui.checkbox(&mut app.engine_flow.personal_eligible, tr("I checked Unity's current Personal eligibility rules and confirm I qualify."));
+                ui.checkbox(&mut app.engine_flow.personal_terms, tr("I read and accept the official Unity Personal and Editor terms."));
+                if widgets::primary_icon(
+                    ui,
+                    Some("check"),
+                    &tr("Activate Personal with my explicit agreement"),
+                    app.engine_flow.personal_eligible && app.engine_flow.personal_terms,
+                )
+                .clicked()
+                {
+                    action = Some(game::UnityAction::ActivatePersonal);
+                }
+                if widgets::secondary(ui, None, &tr("Activate my existing paid subscription")).clicked() {
+                    action = Some(game::UnityAction::ActivateSubscription);
+                }
+            }
+            if widgets::secondary(ui, None, &tr("Check Unity setup")).clicked() {
+                action = Some(game::UnityAction::Check);
+            }
+        }
+    }
+    app.engine_flow.unity = state;
+    if let Some(action) = action {
+        if matches!(app.engine_flow.unity, UnitySetupState::Working(id) if !app.jobs.running().any(|j| j.id == id)) {
+            app.engine_flow.unity = UnitySetupState::Unchecked;
+        }
+        app.start_unity_setup(action);
+    }
+}
+
+fn release_panel(app: &mut CraftApp, ui: &mut Ui, b: Builder, inv: &Inventory) {
+    let t = Tokens::get(ui.ctx());
+    let versions = inv
+        .engines
+        .iter()
+        .filter(|i| i.builder == b)
+        .map(|i| if i.version.is_empty() { tr("Unknown version") } else { i.version.clone() })
+        .collect::<Vec<_>>()
+        .join(", ");
+    if !versions.is_empty() {
+        ui.label(trf("Installed: {versions}", &[("versions", &versions)]));
+    }
+    if let Some((fraction, message)) = app.engine_download(b) {
+        progress_bar(ui, fraction, &message);
+        if let Some((_, id)) = app.engine_flow.job
+            && widgets::secondary(ui, Some("x"), &tr("Cancel")).clicked()
+        {
+            if let Some(job) = app.jobs.running().find(|job| job.id == id) {
+                job.cancel.cancel();
+            }
+            app.engine_flow.start_after = false;
+        }
+        return;
+    }
+    let state = std::mem::take(&mut app.engine_flow.release);
+    let mut check = false;
+    let mut install = false;
+    match &state {
+        ReleaseState::Checking { builder, job } if *builder == b => {
+            if app.jobs.running().any(|j| j.id == *job) {
+                ui.add(crate::widgets::Spinner::new().size(size::ICON_SM).color(t.accent));
+                ui.label(tr("Checking the latest stable version…"));
+            } else {
+                check = widgets::secondary(ui, None, &tr("Check for updates")).clicked();
+            }
+        }
+        ReleaseState::Available(release) if release.builder == b => {
+            ui.label(trf("Latest stable: {version}", &[("version", &release.version)]));
+            if release.bytes > 0 {
+                ui.label(trf("Download: {size} MB", &[("size", &(release.bytes / (1024 * 1024)).to_string())]));
+            }
+            ui.label(tr("Older engine versions are kept. Existing projects are not upgraded."));
+            ui.label(tr("Install runs verified official setup programs. Sign-in and licence acceptance remain yours."));
+            let installed = inv.engines.iter().any(|i| i.builder == b && i.version.trim_end_matches("-stable") == release.version.trim_end_matches("-stable"));
+            if installed {
+                ui.label(tr("Up to date"));
+            } else {
+                let label = if inv.best(b).is_some() { tr("Install update") } else { tr("Install") };
+                install = widgets::primary_icon(ui, Some("download"), &label, app.engine_flow.job.is_none()).clicked();
+            }
+            check = widgets::secondary(ui, None, &tr("Check for updates")).clicked();
+        }
+        ReleaseState::Failed { builder, message } if *builder == b => {
+            ui.label(RichText::new(message).color(t.warning));
+            check = widgets::secondary(ui, None, &tr("Try again")).clicked();
+        }
+        _ => check = true,
+    }
+    app.engine_flow.release = state;
+    if check {
+        if matches!(app.engine_flow.release, ReleaseState::Checking { job, .. } if !app.jobs.running().any(|j| j.id == job)) {
+            app.engine_flow.release = ReleaseState::Unchecked;
+        }
+        app.check_engine_release(b);
+    }
+    if install {
+        app.get_engine(b, ui.ctx());
+    }
+    ui.add_space(space::M);
+    if b == Builder::Unity {
+        unity_setup_panel(app, ui);
     }
 }
 
@@ -804,9 +1047,9 @@ pub fn modal(app: &mut CraftApp, ui: &mut Ui, b: Builder, close: &mut bool) {
         app.refresh_game_engines();
         return;
     };
-    let ready = inv.ready(b);
+    let ready = inv.ready(b) && (b != Builder::Unity || app.unity_usable());
     // Keep looking while the person installs things in other windows.
-    if !ready && !app.engine_flow.checking && app.engine_flow.checked_at.is_none_or(|at| at.elapsed() > Duration::from_secs(3)) {
+    if !app.engine_flow.checking && app.engine_flow.checked_at.is_none_or(|at| at.elapsed() > Duration::from_secs(3)) {
         app.refresh_game_engines();
     }
     ui.ctx().request_repaint_after(Duration::from_secs(1));
@@ -814,12 +1057,26 @@ pub fn modal(app: &mut CraftApp, ui: &mut Ui, b: Builder, close: &mut bool) {
     ui.horizontal(|ui| {
         widgets::icon_tile(ui, if ready { "check" } else { "download" }, size::TILE_LG);
         ui.vertical(|ui| {
-            let title = if ready { trf("{name} is ready", &[("name", b.name())]) } else { trf("Get {name}", &[("name", b.name())]) };
+            let title = if b == Builder::Unreal && ready {
+                tr("Unreal Engine detected. Confirm installation in the official launcher.")
+            } else if ready {
+                trf("{name} is ready", &[("name", b.name())])
+            } else {
+                trf("Get {name}", &[("name", b.name())])
+            };
             ui.label(theme::heading(title, theme::SECTION));
             ui.label(RichText::new(tr(b.needs())).color(t.text_dim));
         });
     });
     ui.add_space(space::L);
+    if b != Builder::Unreal {
+        release_panel(app, ui, b, &inv);
+    } else if ready {
+        ui.label(tr("Install or update Unreal Engine in the official launcher. This list refreshes when installation finishes."));
+        if inv.epic_launcher.is_some() && widgets::secondary(ui, Some("external-link"), &tr("Open the Epic Games Launcher")).clicked() {
+            open_app(app, b);
+        }
+    }
 
     let list = steps(app, b, &inv);
     let current = list.iter().position(|s| !s.done);
@@ -886,8 +1143,14 @@ pub fn modal(app: &mut CraftApp, ui: &mut Ui, b: Builder, close: &mut bool) {
     ui.add_space(space::XS);
     ui.horizontal(|ui| {
         if ready {
-            let label = if app.engine_flow.start_after { "Start building" } else { "Done" };
-            if widgets::primary_icon(ui, Some(if app.engine_flow.start_after { "sparkles" } else { "check" }), label, true).clicked() {
+            let label = if b == Builder::Unreal {
+                tr("I confirmed installation is complete in the official launcher. Continue")
+            } else if app.engine_flow.start_after {
+                tr("Start building")
+            } else {
+                tr("Done")
+            };
+            if widgets::primary_icon(ui, Some(if app.engine_flow.start_after { "sparkles" } else { "check" }), &label, true).clicked() {
                 *close = true;
                 app.state.make.builder = Some(b);
                 if std::mem::take(&mut app.engine_flow.start_after) {
@@ -975,6 +1238,41 @@ fn open_app(app: &mut CraftApp, b: Builder) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn detecting_unreal_never_resumes_before_the_person_confirms_launcher_completion() {
+        let mut app = crate::demo::app(crate::demo::engine(craft_anything_engine::Mode::Beginner, true));
+        app.state.modal = Some(Modal::Engine(Builder::Unreal));
+        app.engine_flow.start_after = true;
+        let inventory = Inventory {
+            engines: vec![game::Installed { builder: Builder::Unreal, version: "5.8".into(), program: "test-editor".into() }],
+            cpp_tools: true,
+            ..Default::default()
+        };
+        app.engines_found(inventory);
+        assert!(app.engine_flow.start_after, "file detection must not start the waiting build");
+        assert_eq!(app.state.modal, Some(Modal::Engine(Builder::Unreal)));
+    }
+
+    #[test]
+    fn unity_first_use_requires_real_licence_status_and_fresh_personal_confirmation() {
+        let mut app = crate::demo::app(crate::demo::engine(craft_anything_engine::Mode::Beginner, true));
+        app.state.modal = Some(Modal::Engine(Builder::Unity));
+        app.engine_flow.start_after = true;
+        app.engine_flow.unity = UnitySetupState::Checked(game::UnityStatus { signed_in: true, licensed: false });
+        let inventory = Inventory {
+            engines: vec![game::Installed { builder: Builder::Unity, version: "6000.6.9f1".into(), program: "test-editor".into() }],
+            ..Default::default()
+        };
+        app.engines_found(inventory);
+        assert!(!app.unity_usable());
+        assert!(app.engine_flow.start_after);
+        assert_eq!(app.state.modal, Some(Modal::Engine(Builder::Unity)));
+        app.start_unity_setup(game::UnityAction::ActivatePersonal);
+        assert!(!matches!(app.engine_flow.unity, UnitySetupState::Working(_)), "unchecked eligibility and terms cannot launch activation");
+        app.engine_flow.unity = UnitySetupState::Checked(game::UnityStatus { signed_in: true, licensed: true });
+        assert!(app.unity_usable());
+    }
 
     #[test]
     fn linux_unreal_guidance_names_the_bundled_clang() {

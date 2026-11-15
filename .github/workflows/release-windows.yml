@@ -1,6 +1,4 @@
-# The only GitHub Actions workflow: the Windows x64 build of a release, which needs WiX and so
-# can't be made on the Mac. It never runs on push or PR; packaging/release.sh starts it after
-# publishing the macOS build locally. CI runs locally (`cargo xtask ci`, the pre-push hook).
+# Manual Windows x64 packaging and native release checks. Never runs on push or PR.
 name: Release (Windows x64)
 
 on:
@@ -63,6 +61,8 @@ jobs:
           echo "LICENCES_DIR=$(cygpath -w "$CARGO_TARGET_DIR/licences")" >>"$GITHUB_ENV"
       - name: Package
         shell: pwsh
+        env:
+          OMCA_UPDATE_SIGNING_KEY: ${{ secrets.OMCA_UPDATE_SIGNING_KEY }}
         run: pwsh packaging/windows/package.ps1
       - name: Verify installed MSI and portable payloads
         shell: pwsh
@@ -85,12 +85,51 @@ jobs:
             bun provider-runtime/smoke.ts (Join-Path $root 'omca-provider-runtime.exe') (Join-Path $env:RUNNER_TEMP 'omca-installed-provider-smoke')
             if ($LASTEXITCODE -ne 0) { throw "Installed provider runtime failed: $root" }
           }
+      - name: Native updater and titlebar regressions
+        shell: pwsh
+        run: |
+          $env:OMCA_UPDATE_TEST_MSI = (Get-ChildItem dist/release/*.msi).FullName
+          cargo test -p craft-anything-platform update::tests -- --nocapture
+          if ($LASTEXITCODE -ne 0) { throw 'Native updater regression failed' }
+          cargo test -p craft-anything-ui-egui updates::tests
+          if ($LASTEXITCODE -ne 0) { throw 'Updater UI regression failed' }
+          cargo test -p craft-anything-ui-egui titlebar::tests
+          if ($LASTEXITCODE -ne 0) { throw 'Titlebar regression failed' }
+      - name: Native game-engine regressions
+        shell: pwsh
+        run: |
+          cargo test -p craft-anything-engines --lib game::
+          if ($LASTEXITCODE -ne 0) { throw 'Native game-engine regression failed' }
+          cargo test -p craft-anything-engine --lib setup_tools::tests
+          if ($LASTEXITCODE -ne 0) { throw 'Engine setup authorization regression failed' }
+          cargo test -p craft-anything-ui-egui --lib engine_ui::tests
+          if ($LASTEXITCODE -ne 0) { throw 'Engine setup UI regression failed' }
+      - name: Official Unity CLI private-profile boundary
+        shell: pwsh
+        run: |
+          $store = Join-Path $env:RUNNER_TEMP ("omca-unity-private-" + [guid]::NewGuid().ToString())
+          cargo run --locked -p craft-anything-engines --example unity_private_env -- "$store"
+          if ($LASTEXITCODE -ne 0) { throw 'Official Unity CLI cannot isolate its Windows account profile' }
+      - name: Real portable updater helper smoke
+        shell: pwsh
+        env:
+          OMCA_UPDATE_SIGNING_KEY: ${{ secrets.OMCA_UPDATE_SIGNING_KEY }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          cargo build -p craft-anything-platform --example update_fixture
+          if ($LASTEXITCODE -ne 0) { throw 'Updater fixture build failed' }
+          $key = Join-Path $env:RUNNER_TEMP 'omca-update-smoke.pem'
+          [IO.File]::WriteAllText($key, $env:OMCA_UPDATE_SIGNING_KEY)
+          try {
+            bun packaging/update-smoke.ts target/debug/examples/update_fixture.exe (Join-Path $env:RUNNER_TEMP 'omca-update-smoke') $key
+            if ($LASTEXITCODE -ne 0) { throw 'Portable updater helper smoke failed' }
+          } finally { Remove-Item -LiteralPath $key -Force }
       - name: Attach to the release
         if: inputs.publish
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release upload "${{ inputs.tag }}" (Get-ChildItem dist/release/*.msi, dist/release/*.zip).FullName --clobber
+        run: gh release upload "${{ inputs.tag }}" (Get-ChildItem dist/release/*.msi, dist/release/*.zip, dist/release/*.manifest.json, dist/release/*.sig).FullName --clobber
       - name: Keep pre-release build artifacts
         if: ${{ !inputs.publish }}
         uses: actions/upload-artifact@v4
@@ -99,4 +138,6 @@ jobs:
           path: |
             dist/release/*.msi
             dist/release/*.zip
+            dist/release/*.manifest.json
+            dist/release/*.sig
           if-no-files-found: error

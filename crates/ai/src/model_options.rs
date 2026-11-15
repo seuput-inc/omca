@@ -87,11 +87,13 @@ fn show(ctx: &mut Ctx<'_>, params: Value) -> Result<ToolOutput, ToolError> {
 fn set(ctx: &mut Ctx<'_>, params: Value) -> Result<ToolOutput, ToolError> {
     let params: SetModelOptions = parse_params(params)?;
     crate::model_tools::require_cli_tools(ctx)?;
-    let mut config = AiConfig::from_table(&ctx.session.settings.ai)?;
-    update(&mut config, &params)?;
-    let mut settings = ctx.session.settings.clone();
-    settings.ai = config.to_table()?;
-    settings.save_to(&ctx.session.config_dir().join("config.toml"))?;
+    let path = ctx.session.config_dir().join("config.toml");
+    let settings = ctx.session.settings.update_to(&path, |settings| {
+        let mut config = AiConfig::from_table(&settings.ai)?;
+        update(&mut config, &params)?;
+        settings.ai = config.to_table()?;
+        Ok(())
+    })?;
     ctx.session.settings = settings;
     Ok(ToolOutput::Value(serde_json::json!({"backend": params.backend, "context": params.context})))
 }
@@ -168,6 +170,50 @@ mod tests {
         let fallback = ModelTuning::from_metadata("other-model".into(), &[]);
         assert_eq!(fallback.context[0].label, "Standard");
         assert!(fallback.reasoning.is_empty());
+    }
+    #[test]
+    fn settings_writers_tool_patches_latest_settings_and_rejects_stale_model() {
+        use crate::{BackendEntry, BackendOptions};
+        use craft_anything_engine::{CallOptions, Caller, Engine, Session, Settings};
+        let directory = tempfile::tempdir().unwrap();
+        let mut session = Session::isolated(directory.path());
+        let mut config = AiConfig::default();
+        for name in ["Copilot", "Other"] {
+            config.upsert(BackendEntry {
+                config: BackendConfig {
+                    name: name.into(),
+                    kind: BackendKind::AgentCli,
+                    model: "copilot".into(),
+                    base_url: None,
+                    ssh_host: None,
+                    enabled: true,
+                },
+                options: BackendOptions { cli_model: Some("old".into()), ..Default::default() },
+            });
+        }
+        session.settings.ai = config.to_table().unwrap();
+        let path = session.config_dir().join("config.toml");
+        session.settings.save_to(&path).unwrap();
+        let engine = Engine::shared(session, specs());
+        let mut newer = Settings::load_from(&path);
+        newer.theme = "studio-light".into();
+        newer.language = "ko".into();
+        config.backends[1].options.cli_model = Some("new".into());
+        newer.ai = config.to_table().unwrap();
+        newer.save_to(&path).unwrap();
+        engine
+            .call("ai_model_options_set", json!({"backend":"Copilot", "expected_cli_model":"old", "context":"long_context"}), CallOptions::new(Caller::Agent))
+            .unwrap();
+        let saved = Settings::load_from(&path);
+        let saved_ai = AiConfig::from_table(&saved.ai).unwrap();
+        assert_eq!((saved.theme.as_str(), saved.language.as_str()), ("studio-light", "ko"));
+        assert_eq!(saved_ai.get("Other").unwrap().options.cli_model.as_deref(), Some("new"));
+        assert_eq!(saved_ai.get("Copilot").unwrap().options.cli_context, Some(CliContext::Long));
+        assert!(
+            engine
+                .call("ai_model_options_set", json!({"backend":"Other", "expected_cli_model":"old", "context":"long_context"}), CallOptions::new(Caller::Agent))
+                .is_err()
+        );
     }
 
     #[test]

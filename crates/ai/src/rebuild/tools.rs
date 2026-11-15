@@ -475,6 +475,7 @@ fn rebuild_start(ctx: &mut Ctx<'_>, params: Value) -> Result<ToolOutput, ToolErr
         max_rounds: p.rounds.unwrap_or(2),
         beginner: false,
         clean_room: Some(ctx.session.clean_room()),
+        services: Some(craft_anything_engine::session::ToolServices::capture(ctx.session)),
         ..RunOptions::default()
     };
     // A tool runs with the session locked, so the hub reads the saved file: use this session's

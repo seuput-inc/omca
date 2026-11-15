@@ -27,6 +27,9 @@ param(
   [switch] $SkipBuild
 )
 $ErrorActionPreference = 'Stop'
+if (-not $env:OMCA_UPDATE_SIGNING_KEY_FILE -and -not $env:OMCA_UPDATE_SIGNING_KEY) {
+  throw 'OMCA_UPDATE_SIGNING_KEY_FILE or OMCA_UPDATE_SIGNING_KEY is required for signed app updates.'
+}
 $Root = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
 
 function Invoke-Native([string] $What, [scriptblock] $Block) {
@@ -198,6 +201,12 @@ Copy-Item (Join-Path $PSScriptRoot 'portable.txt') $Portable
 $Zip = Join-Path $Dist "craft-anything-$Version-windows-$Arch-portable.zip"
 Remove-Item -Force $Zip -ErrorAction SilentlyContinue
 Compress-Archive -Path $Portable -DestinationPath $Zip
+Invoke-Native 'Sign OMCA MSI update manifest' {
+  bun (Join-Path $Root 'packaging\sign-update.ts') $Msi (Join-Path $Stage 'craft-anything.exe') $Version windows-msi
+}
+Invoke-Native 'Sign OMCA portable update manifest' {
+  bun (Join-Path $Root 'packaging\sign-update.ts') $Zip (Join-Path $Stage 'craft-anything.exe') $Version windows-portable
+}
 
 # Smoke-test the CLI when this machine can run it. An ARM64 build made on an x64 runner can't run
 # here; .github/workflows/windows-arm64.yml installs and runs it on ARM64 instead.
