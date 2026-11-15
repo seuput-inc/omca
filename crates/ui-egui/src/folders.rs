@@ -15,6 +15,23 @@ use std::path::PathBuf;
 pub fn make_line(app: &mut CraftApp, ui: &mut Ui) {
     let t = Tokens::get(ui.ctx());
     let d = &app.state.make;
+    if d.folder.is_none() {
+        ui.label(RichText::new(tr("Project name")).size(theme::SMALL).color(t.text_dim));
+        let hint = workspace::suggest_name(&d.request, &crate::make::resolve_target(d));
+        let response = ui.add(
+            egui::TextEdit::singleline(&mut app.state.make.name)
+                .hint_text(hint)
+                .desired_width(ui.available_width())
+                .font(theme::medium(theme::BODY))
+                .frame(widgets::text_field_frame_compact(&t)),
+        );
+        widgets::named(response, &tr("Project name"));
+        if let Some(problem) = workspace::project_name_problem(&app.state.make.name) {
+            ui.label(RichText::new(tr(problem)).size(theme::SMALL).color(t.danger));
+        }
+        ui.add_space(space::S);
+    }
+    let d = &app.state.make;
     let (place, how) = match &d.folder {
         Some(f) => (
             f.display().to_string(),
@@ -25,7 +42,13 @@ pub fn make_line(app: &mut CraftApp, ui: &mut Ui) {
                 (true, None) => Some(tr("say how to use the files there")),
             },
         ),
-        None => (trf("a new folder in {dir}", &[("dir", &app.settings.projects_dir().display().to_string())]), None),
+        None => {
+            let name = if d.name.trim().is_empty() { workspace::suggest_name(&d.request, &crate::make::resolve_target(d)) } else { d.name.trim().into() };
+            (
+                app.settings.projects_dir().join(workspace::slug(&name)).display().to_string(),
+                Some(tr("A new folder is created automatically. Existing folders get a numbered suffix.")),
+            )
+        }
     };
     let picked = d.folder.is_some();
     // Where it goes (and what the files there are), then what can be changed, each on its own line.
@@ -38,13 +61,19 @@ pub fn make_line(app: &mut CraftApp, ui: &mut Ui) {
         ui.add_space(space::XL);
         if let Some(how) = how {
             ui.label(RichText::new(how).size(theme::SMALL).color(t.text_dim));
-            if widgets::link(ui, "Change").clicked() {
+            if picked && widgets::link(ui, "Change").clicked() {
                 app.state.modal = Some(Modal::ExistingFiles);
             }
             ui.label(RichText::new("·").size(theme::SMALL).color(t.text_faint));
         }
-        if widgets::link(ui, if picked { "Pick another folder…" } else { "Choose a folder…" }).clicked() {
-            app.pick(Pick::ProjectFolder);
+        if widgets::link(ui, if picked { "Pick another folder…" } else { "Change projects folder…" }).clicked() {
+            app.pick(if picked { Pick::ProjectFolder } else { Pick::ProjectsDir });
+        }
+        if !picked {
+            ui.label(RichText::new("·").size(theme::SMALL).color(t.text_faint));
+            if widgets::link(ui, "Work on my project").clicked() {
+                app.pick(Pick::ProjectFolder);
+            }
         }
         if picked {
             ui.label(RichText::new("·").size(theme::SMALL).color(t.text_faint));

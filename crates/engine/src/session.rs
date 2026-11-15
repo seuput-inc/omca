@@ -51,6 +51,27 @@ impl std::fmt::Debug for Extensions {
     }
 }
 
+/// Immutable tool registrations carried into an isolated run. Mutable project context and live
+/// MCP clients are not part of this snapshot.
+#[derive(Clone, Debug, Default)]
+pub struct ToolServices {
+    assets: Option<Arc<craft_anything_engines::assets::AssetProviders>>,
+    plugins: crate::plugins::RunServices,
+}
+
+impl ToolServices {
+    pub fn capture(session: &Session) -> Self {
+        Self { assets: session.ext.get::<craft_anything_engines::assets::AssetProviders>(), plugins: crate::plugins::RunServices::capture(session) }
+    }
+
+    pub fn install(&self, session: &mut Session) {
+        if let Some(assets) = &self.assets {
+            session.ext.insert(assets.clone());
+        }
+        self.plugins.install(session);
+    }
+}
+
 /// One open target with its annotations and caches.
 #[derive(Debug)]
 pub struct OpenTarget {
@@ -108,11 +129,11 @@ impl Session {
     /// Keep a project started in a folder the person picked in the project list
     /// ([`Settings::remember_project`]), saving settings when that changed them.
     pub fn remember_project(&mut self, root: &std::path::Path) -> Result<(), craft_anything_evidence::ToolError> {
-        let mut next = self.settings.clone();
-        if next.remember_project(root) {
-            next.save_to(&self.config_dir().join("config.toml"))?;
-            self.settings = next;
-        }
+        let next = self.settings.update_to(&self.config_dir().join("config.toml"), |next| {
+            next.remember_project(root);
+            Ok(())
+        })?;
+        self.settings = next;
         Ok(())
     }
 

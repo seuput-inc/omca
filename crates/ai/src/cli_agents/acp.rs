@@ -694,6 +694,7 @@ pub struct AcpConversation {
     approver: Option<Approver>,
     preamble: String,
     logs: Option<PathBuf>,
+    toolchain_env: Vec<(String, std::ffi::OsString)>,
     failure: Option<TurnFailure>,
     /// Suppress MCP attachment and refuse permission requests; startup flags restrict native tools.
     question: bool,
@@ -795,6 +796,11 @@ impl AcpConversation {
         self
     }
 
+    pub(crate) fn with_toolchain_env(mut self, env: Vec<(String, std::ffi::OsString)>) -> Self {
+        self.toolchain_env = env;
+        self
+    }
+
     /// The stored key and the `authMethods` id it authenticates with (`key_auth_method`), for an
     /// agent that asks the host to `authenticate` before a session opens.
     pub fn with_auth(mut self, auth: Option<(String, String)>) -> Self {
@@ -841,6 +847,7 @@ impl AcpConversation {
             approver: None,
             preamble: String::new(),
             logs: None,
+            toolchain_env: Vec::new(),
             failure: None,
             question: false,
             validation_error: None,
@@ -873,9 +880,11 @@ impl AcpConversation {
         let (shared, tx, busy) = (self.shared.clone(), self.tx.clone(), self.busy.clone());
         let shared_err = self.shared.clone();
         let tx_err = tx.clone();
-        let mut proc = self
-            .adapter
-            .process(&self.program)
+        let mut process = self.adapter.process(&self.program);
+        for (key, value) in &self.toolchain_env {
+            process = process.env(key, value);
+        }
+        let mut proc = process
             .args(&self.args)
             .cwd(&self.cwd)
             // Our own CLI, started from inside the agent, calls tools as an agent (not the person).

@@ -434,6 +434,57 @@ pub(crate) fn activity_row(ui: &mut Ui, text: RichText) {
     });
 }
 
+#[derive(Clone, Copy)]
+pub(crate) enum FailureKind {
+    Accounts,
+    Model,
+    Answer,
+    Build,
+}
+
+impl FailureKind {
+    fn words(self) -> (&'static str, &'static str) {
+        match self {
+            Self::Accounts => ("Account connection needs attention", "Check the connection details below, then refresh accounts or add the account again."),
+            Self::Model => ("Model connection did not finish", "Check Models & accounts, then choose an available model. Your draft is kept."),
+            Self::Answer => {
+                ("The answer could not finish", "Review the error details and fix the issue before sending another message. Your conversation is kept.")
+            }
+            Self::Build => {
+                ("The build could not finish", "Fix the issue shown below, then send a message to continue. Existing files and conversation are kept.")
+            }
+        }
+    }
+}
+
+pub(crate) fn failure(ui: &mut Ui, kind: FailureKind, diagnostic: &str, remediation: Option<&str>, log: Option<&std::path::Path>) -> bool {
+    let t = Tokens::get(ui.ctx());
+    let (title, next) = kind.words();
+    let mut open_log = false;
+    widgets::callout(&t, t.danger).show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        ui.horizontal_top(|ui| {
+            icons::show(ui, "triangle-alert", size::ICON, t.danger);
+            ui.add(egui::Label::new(theme::heading(tr(title), theme::BODY)).wrap());
+        });
+        widgets::caption(ui, "Next step");
+        ui.add(egui::Label::new(RichText::new(tr(next)).color(t.text_dim)).wrap());
+        if let Some(remediation) = remediation.filter(|s| !s.trim().is_empty()) {
+            ui.add(egui::Label::new(RichText::new(tr(remediation)).color(t.text)).wrap());
+        }
+        egui::CollapsingHeader::new(tr("Error details")).icon(widgets::disclosure_icon).show(ui, |ui| {
+            ui.add(egui::Label::new(RichText::new(diagnostic).font(theme::mono(theme::SMALL))).wrap().selectable(true));
+            if widgets::secondary(ui, Some("copy"), "Copy error details").clicked() {
+                ui.ctx().copy_text(diagnostic.to_owned());
+            }
+            if let Some(path) = log {
+                open_log = widgets::open_log_button(ui, path);
+            }
+        });
+    });
+    open_log
+}
+
 fn item_ui(ui: &mut Ui, item: &ChatItem, beginner: bool, dense: bool, open: bool, actions: &mut Vec<ChatAction>) {
     let t = Tokens::get(ui.ctx());
     match item {
@@ -451,7 +502,11 @@ fn item_ui(ui: &mut Ui, item: &ChatItem, beginner: bool, dense: bool, open: bool
             });
         }
         ChatItem::Status(text) => {
-            activity_row(ui, RichText::new(text).italics().color(t.text_dim).size(theme::CAPTION));
+            let shown = crate::i18n::tr_known(text).unwrap_or_else(|| tr("Working on your request…"));
+            ui.horizontal_top(|ui| {
+                icons::show(ui, "activity", size::ICON_SM, t.accent);
+                ui.add(egui::Label::new(RichText::new(shown).italics().color(t.text_dim).size(theme::CAPTION)).wrap()).on_hover_text(text);
+            });
         }
         ChatItem::Tool { tool, ok, summary, evidence, .. } => {
             ui.horizontal_wrapped(|ui| {
@@ -487,9 +542,9 @@ fn item_ui(ui: &mut Ui, item: &ChatItem, beginner: bool, dense: bool, open: bool
                 ui.set_width(ui.available_width());
                 ui.horizontal(|ui| {
                     icons::show(ui, "shield", size::ICON_LG, t.warning);
-                    ui.label(RichText::new(crate::i18n::trf("May I run \"{title}\"?", &[("title", title)])).font(theme::semibold(theme::BODY)));
+                    ui.label(RichText::new(crate::i18n::trf("May I run \"{title}\"?", &[("title", &tr(title))])).font(theme::semibold(theme::BODY)));
                 });
-                ui.label(RichText::new(explanation).color(t.text_dim));
+                ui.label(RichText::new(tr(explanation)).color(t.text_dim));
                 ui.label(
                     RichText::new(tr("This runs code from the target or changes a device. Nothing runs until you say so."))
                         .color(t.text_faint)
@@ -522,21 +577,14 @@ fn item_ui(ui: &mut Ui, item: &ChatItem, beginner: bool, dense: bool, open: bool
             });
         }
         ChatItem::Error { message, remediation, log } => {
-            widgets::card(&t).stroke(theme::hairline(t.danger.gamma_multiply(0.6))).inner_margin(theme::pad(space::M)).show(ui, |ui| {
-                ui.set_width(ui.available_width());
-                ui.horizontal(|ui| {
-                    icons::show(ui, "triangle-alert", size::ICON, t.danger);
-                    ui.add(egui::Label::new(RichText::new(message).color(t.text)).wrap());
-                });
-                if let Some(r) = remediation {
-                    ui.add(egui::Label::new(RichText::new(r).color(t.text_dim)).wrap());
-                }
-                if let Some(l) = log
-                    && widgets::open_log_button(ui, l)
-                {
-                    actions.push(ChatAction::OpenLog(l.clone()));
-                }
-            });
+            if failure(ui, FailureKind::Answer, message, remediation.as_deref(), log.as_deref())
+                && let Some(log) = log
+            {
+                actions.push(ChatAction::OpenLog(log.clone()));
+            }
+            if widgets::secondary(ui, Some("settings"), "Models & accounts").clicked() {
+                actions.push(ChatAction::AddBrain);
+            }
         }
         ChatItem::AddBrain => {
             widgets::callout_soft(&t).show(ui, |ui| {
@@ -723,6 +771,82 @@ mod tests {
             let commands = &h.output().platform_output.commands;
             assert!(commands.iter().any(|c| matches!(c, egui::OutputCommand::CopyText(t) if t == text)), "{commands:?}");
         }
+    }
+
+    #[test]
+    fn status_translates_known_keys_and_keeps_dynamic_details_on_hover() {
+        use egui_kittest::{Harness, kittest::Queryable};
+        let mut stopped = Harness::builder().build_ui(|ui| {
+            item_ui(ui, &ChatItem::Status("Stopped.".into()), false, false, false, &mut Vec::new());
+        });
+        stopped.run_steps(2);
+        assert!(stopped.query_by_label(&tr("Stopped.")).is_some(), "a terminal status must not become Working");
+        let raw = "example-backend: batch 17 / 29";
+        let mut h = Harness::builder().build_ui(move |ui| {
+            item_ui(ui, &ChatItem::Status(raw.into()), false, false, false, &mut Vec::new());
+        });
+        h.run_steps(2);
+        assert!(h.query_by_label(raw).is_none(), "technical status is not the primary explanation");
+        let pos = h.get_by_label(&tr("Working on your request…")).rect().center();
+        h.input_mut().events.push(egui::Event::PointerMoved(pos));
+        h.run_steps(80);
+        assert!(h.query_by_label(raw).is_some(), "hover preserves the original diagnostic");
+    }
+
+    #[test]
+    fn consent_localizes_known_copy_without_hiding_unknown_explanations() {
+        use egui_kittest::{Harness, kittest::Queryable};
+        let explanation = "Runs example-target with --inspect.";
+        let item = ChatItem::Consent {
+            call_id: "consent-example".into(),
+            tool: "example_tool".into(),
+            title: "Open an app or file".into(),
+            explanation: explanation.into(),
+            answer: None,
+        };
+        let mut ready = false;
+        let mut h = Harness::builder().build_ui_state(
+            move |ui, actions| {
+                if !ready {
+                    theme::install_fonts(ui.ctx());
+                    ready = true;
+                    return;
+                }
+                item_ui(ui, &item, false, false, false, actions);
+            },
+            Vec::new(),
+        );
+        h.run_steps(3);
+        let title = crate::i18n::trf("May I run \"{title}\"?", &[("title", &tr("Open an app or file"))]);
+        assert!(h.query_by_label(&title).is_some());
+        assert!(h.query_by_label(explanation).is_some(), "the person sees what would run before approving");
+        h.get_by_label(&tr("Allow once")).click();
+        h.step();
+        assert!(matches!(h.state().last(), Some(ChatAction::Consent(id, ConsentAnswer::Once)) if id == "consent-example"));
+    }
+
+    #[test]
+    fn failure_details_expand_and_copy_without_repeating_the_request() {
+        use egui_kittest::{Harness, kittest::Queryable};
+        let diagnostic = "Example provider rejected the selected model.";
+        let mut ready = false;
+        let mut h = Harness::builder().build_ui(move |ui| {
+            if !ready {
+                theme::install_fonts(ui.ctx());
+                ready = true;
+                return;
+            }
+            failure(ui, FailureKind::Answer, diagnostic, Some("Choose an available model."), None);
+        });
+        h.run_steps(3);
+        assert!(h.query_by_label(diagnostic).is_none(), "technical details start collapsed");
+        h.get_by_label("Error details").click();
+        h.run_steps(3);
+        assert!(h.query_by_label(diagnostic).is_some(), "the original diagnostic remains accessible");
+        h.get_by_label("Copy error details").click();
+        h.step();
+        assert!(h.output().platform_output.commands.iter().any(|c| matches!(c, egui::OutputCommand::CopyText(t) if t == diagnostic)));
+        assert!(h.query_by_label("Try again").is_none(), "an unknown failure must not offer a blind rerun");
     }
 
     #[test]

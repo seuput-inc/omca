@@ -4,13 +4,14 @@ use crate::i18n::tr;
 use crate::theme::{self, Tokens, space};
 use crate::{CraftApp, Done, widgets};
 use craft_anything_ai::provider_runtime::{Action, Event, LoginEvent, LoginResponse, Snapshot, Task};
+use craft_anything_engine::evidence::ToolError;
 use egui::{RichText, Ui};
 
 #[derive(Default)]
 pub(crate) struct ComposerModelPicker {
     query: String,
     pending: Option<u64>,
-    error: Option<String>,
+    error: Option<ToolError>,
     retry: Option<(String, String)>,
     open: bool,
     focused: usize,
@@ -20,7 +21,7 @@ pub(crate) struct ComposerModelPicker {
 pub(crate) struct AccountsState {
     snapshot: Option<Snapshot>,
     task: Option<Task>,
-    error: Option<String>,
+    error: Option<ToolError>,
     search: String,
     adding: bool,
     key_provider: Option<String>,
@@ -50,7 +51,16 @@ pub(crate) fn set_demo_scene(app: &mut CraftApp, scene: &str) {
             url: "https://example.invalid/sign-in".into(),
             instructions: Some("Open the sign-in page to continue.".into()),
         }),
-        "error" => state.error = Some("Provider runtime unavailable.".into()),
+        "error" => state.error = Some(ToolError::unavailable("Provider runtime unavailable.")),
+        "empty" => {
+            if let Some(snapshot) = &mut state.snapshot {
+                for provider in &mut snapshot.providers {
+                    provider.accounts.clear();
+                    provider.authenticated = false;
+                }
+                snapshot.models.clear();
+            }
+        }
         _ => {}
     }
 }
@@ -107,7 +117,7 @@ pub(crate) fn set_pending_for_test(app: &mut CraftApp, job: u64) {
 pub(crate) fn failed_job(app: &mut CraftApp, job: u64, error: &str) {
     if app.provider_accounts.picker.pending == Some(job) {
         app.provider_accounts.picker.pending = None;
-        app.provider_accounts.picker.error = Some(error.to_owned());
+        app.provider_accounts.picker.error = Some(ToolError::internal(error));
     }
 }
 
@@ -129,7 +139,7 @@ pub(crate) fn completed(app: &mut CraftApp, job: u64, result: &Result<String, cr
         return false;
     }
     app.provider_accounts.picker.pending = None;
-    app.provider_accounts.picker.error = result.as_ref().err().map(|e| e.for_people());
+    app.provider_accounts.picker.error = result.as_ref().err().cloned();
     if let (Ok(name), Some((_, model))) = (result, app.provider_accounts.picker.retry.as_ref()) {
         if let Some(backend) = app.backends.iter_mut().find(|b| &b.name == name) {
             backend.model.clone_from(model);
@@ -220,18 +230,13 @@ fn composer_control(app: &mut CraftApp, ui: &mut Ui, accessible_name: &str) {
                     ui.add(widgets::Spinner::new());
                 }
                 if let Some(error) = &state.picker.error {
-                    ui.colored_label(Tokens::get(ui.ctx()).danger, error);
-                    if ui.button(tr("Retry")).clicked() {
+                    crate::chat::failure(ui, crate::chat::FailureKind::Model, &error.message, error.remediation.as_deref(), None);
+                    if error.retryable && state.picker.retry.is_some() && ui.button(tr("Retry model connection")).clicked() {
                         selected = state.picker.retry.clone();
                     }
                 }
                 if let Some(error) = &state.error {
-                    ui.colored_label(Tokens::get(ui.ctx()).danger, error);
-                    if ui.button(tr("Retry")).clicked() {
-                        state.started = state.snapshot.is_some();
-                        state.loaded_models.clear();
-                        state.error = None;
-                    }
+                    crate::chat::failure(ui, crate::chat::FailureKind::Accounts, &error.message, error.remediation.as_deref(), None);
                 }
                 if let Some(snapshot) = &state.snapshot {
                     let query = state.picker.query.to_lowercase();
@@ -383,7 +388,7 @@ pub(crate) fn poll(app: &mut CraftApp) {
                                 state.adding = false;
                             }
                         }
-                        Err(error) => state.error = Some(error.for_people()),
+                        Err(error) => state.error = Some(error),
                     }
                     state.key_pending = false;
                     state.connecting = false;
@@ -397,7 +402,7 @@ pub(crate) fn poll(app: &mut CraftApp) {
                                 snapshot.models.extend(models);
                             }
                         }
-                        Err(error) => state.error = Some(error.for_people()),
+                        Err(error) => state.error = Some(error),
                     }
                     state.model_provider = None;
                 }
@@ -414,7 +419,7 @@ fn response(state: &mut AccountsState, request_id: String, value: Option<String>
                 state.prompt = None;
                 state.input.clear();
             }
-            Err(error) => state.error = Some(error.for_people()),
+            Err(error) => state.error = Some(error),
         }
     }
 }
@@ -458,14 +463,31 @@ fn login_prompt(state: &mut AccountsState, ui: &mut Ui) {
 }
 
 pub(crate) fn show(app: &mut CraftApp, ui: &mut Ui) {
+    widgets::section(ui, "Current model", true);
     composer_control(app, ui, "Settings model");
-    ui.add_space(space::M);
+    let ready = selection_ready(app);
+    let t = Tokens::get(ui.ctx());
+    let status = if ready {
+        "Ready to send"
+    } else if model_pending(app) {
+        "Connecting…"
+    } else if app.provider_accounts.task.is_some() {
+        "Loading accounts…"
+    } else {
+        "Choose an available model to send. Your draft stays in the composer."
+    };
+    ui.add(egui::Label::new(RichText::new(tr(status)).color(if ready { t.success } else { t.text_dim })).wrap());
+    if let Some(error) = &app.provider_accounts.picker.error {
+        crate::chat::failure(ui, crate::chat::FailureKind::Model, &error.message, error.remediation.as_deref(), None);
+    }
+    ui.add_space(space::L);
+    widgets::section(ui, "Connected accounts", false);
     let mut state = std::mem::take(&mut app.provider_accounts);
     if !state.started {
         state.started = true;
         start(app, &mut state, Action::Snapshot { refresh: false });
     }
-    let t = Tokens::get(ui.ctx());
+    let idle = state.task.is_none() && state.picker.pending.is_none();
     if app.busy() || app.creating.is_some() {
         ui.label(RichText::new(tr("Wait for active work to finish before changing the model.")).color(t.warning));
         ui.disable();
@@ -474,17 +496,26 @@ pub(crate) fn show(app: &mut CraftApp, ui: &mut Ui) {
         ui.ctx().request_repaint_after(std::time::Duration::from_millis(100));
     }
     ui.horizontal_wrapped(|ui| {
-        if widgets::secondary(ui, Some("plus"), "Add account").clicked() {
-            state.adding = !state.adding;
-            state.model_provider = None;
-            state.key_provider = None;
-            state.key.clear();
-        }
-        if widgets::secondary(ui, Some("refresh-cw"), "Refresh accounts").clicked() {
-            start(app, &mut state, Action::Snapshot { refresh: true });
-        }
+        ui.add_enabled_ui(idle, |ui| {
+            if widgets::secondary(ui, (!state.adding).then_some("plus"), if state.adding { "Back to accounts" } else { "Add account" }).clicked() {
+                state.adding = !state.adding;
+                state.model_provider = None;
+                state.key_provider = None;
+                state.key.clear();
+            }
+            if widgets::secondary(ui, Some("refresh-cw"), "Refresh accounts").clicked() {
+                start(app, &mut state, Action::Snapshot { refresh: true });
+            }
+        });
         if state.task.is_some() {
             ui.add(widgets::Spinner::new());
+            ui.label(tr(if state.connecting {
+                "Connecting…"
+            } else if state.model_provider.is_some() {
+                "Loading models…"
+            } else {
+                "Loading accounts…"
+            }));
             if widgets::secondary(ui, None, "Cancel").clicked()
                 && let Some(task) = &state.task
             {
@@ -493,7 +524,7 @@ pub(crate) fn show(app: &mut CraftApp, ui: &mut Ui) {
         }
     });
     if let Some(error) = &state.error {
-        ui.label(RichText::new(error).color(t.danger));
+        crate::chat::failure(ui, crate::chat::FailureKind::Accounts, &error.message, error.remediation.as_deref(), None);
     }
     login_prompt(&mut state, ui);
     if let Some(provider_id) = state.key_provider.clone() {
@@ -517,8 +548,19 @@ pub(crate) fn show(app: &mut CraftApp, ui: &mut Ui) {
     }
     // The snapshot is token-free. Taking it out lets actions update transient state while drawing.
     if let Some(snapshot) = state.snapshot.take() {
+        if !state.adding && state.key_provider.is_none() && snapshot.providers.iter().all(|p| p.accounts.is_empty()) && state.task.is_none() {
+            ui.add_space(space::M);
+            ui.label(theme::heading(tr("No provider accounts connected"), theme::CARD));
+            ui.add(
+                egui::Label::new(
+                    RichText::new(tr("Add an account here, then choose its model above. No accounts from other apps are used.")).color(t.text_dim),
+                )
+                .wrap(),
+            );
+            ui.add_space(space::M);
+        }
         for provider in &snapshot.providers {
-            if state.adding || state.model_provider.is_some() || state.key_provider.is_some() || provider.accounts.is_empty() {
+            if state.adding || state.key_provider.is_some() || provider.accounts.is_empty() {
                 continue;
             }
             widgets::panel(&t).show(ui, |ui| {
@@ -526,7 +568,13 @@ pub(crate) fn show(app: &mut CraftApp, ui: &mut Ui) {
                 ui.horizontal_wrapped(|ui| {
                     widgets::provider_mark(ui, &provider.name);
                     ui.label(RichText::new(&provider.name).font(theme::semibold(theme::SMALL)));
-                    let add = widgets::secondary(ui, Some("plus"), "Add account");
+                    widgets::pill(
+                        ui,
+                        if provider.authenticated && provider.disabled_reason.is_none() { "Connected" } else { "Needs attention" },
+                        if provider.authenticated && provider.disabled_reason.is_none() { t.success } else { t.warning },
+                        t.raised,
+                    );
+                    let add = ui.add_enabled_ui(idle, |ui| widgets::secondary(ui, Some("plus"), "Add account")).inner;
                     if widgets::named(add, &crate::i18n::trf("Add account to {name}", &[("name", &provider.name)])).clicked() {
                         state.adding = true;
                         state.search = provider.name.clone();
@@ -534,6 +582,9 @@ pub(crate) fn show(app: &mut CraftApp, ui: &mut Ui) {
                         state.key.clear();
                     }
                 });
+                if let Some(reason) = &provider.disabled_reason {
+                    ui.add(egui::Label::new(RichText::new(reason).color(t.warning)).wrap());
+                }
                 if let Some(error) = &provider.usage_error {
                     ui.label(RichText::new(error).color(t.warning));
                 }
@@ -547,11 +598,17 @@ pub(crate) fn show(app: &mut CraftApp, ui: &mut Ui) {
                         if account.in_use {
                             widgets::pill(ui, "Last used", t.text_dim, t.raised);
                         }
-                        ui.label(RichText::new(&account.state).color(t.text_faint).size(theme::CAPTION));
+                        let available = account.state == "available";
+                        ui.label(
+                            RichText::new(tr(if available { "Available" } else { "Unavailable" }))
+                                .color(if available { t.success } else { t.warning })
+                                .size(theme::CAPTION),
+                        );
+                        ui.label(RichText::new(tr(if account.kind == "api_key" { "API key" } else { "Login" })).color(t.text_faint).size(theme::CAPTION));
                         ui.push_id((&provider.id, account.id), |ui| {
                             ui.menu_button(tr("Account actions"), |ui| {
                                 ui.add_enabled_ui(state.task.is_none(), |ui| {
-                                    if ui.button(tr("Select account")).clicked() {
+                                    if ui.add_enabled(available, egui::Button::new(tr("Select account"))).clicked() {
                                         start(app, &mut state, Action::SelectAccount { provider_id: provider.id.clone(), credential_id: Some(account.id) });
                                         ui.close();
                                     }
@@ -703,6 +760,32 @@ pub(crate) fn show(app: &mut CraftApp, ui: &mut Ui) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn model_failure_keeps_selection_and_only_offers_retry_for_retryable_errors() {
+        use craft_anything_engine::evidence::ErrorCode;
+        use egui_kittest::{Harness, kittest::Queryable};
+        for (code, retryable) in [(ErrorCode::BadInput, false), (ErrorCode::TimedOut, true)] {
+            let mut app = crate::demo::app(crate::demo::engine(craft_anything_engine::Mode::Beginner, true));
+            crate::demo::composer_scene(&mut app, false);
+            let backend = app.state.backend.clone();
+            app.provider_accounts.picker.pending = Some(7);
+            app.provider_accounts.picker.retry = Some(("other".into(), "unavailable-model".into()));
+            assert!(completed(&mut app, 7, &Err(ToolError::new(code, "Example model connection failure."))));
+            let mut h = Harness::builder().with_size(egui::vec2(760.0, 520.0)).build_ui_state(
+                |ui, app| {
+                    theme::install_fonts(ui.ctx());
+                    composer(app, ui);
+                },
+                app,
+            );
+            h.get_by_label_contains("Change model").click();
+            h.run_steps(3);
+            assert_eq!(h.query_by_label("Retry model connection").is_some(), retryable);
+            assert_eq!(h.state().state.backend, backend, "a failure must not switch provider");
+            assert_eq!(h.state().state.input, "What can you help me make?", "the draft survives");
+        }
+    }
 
     #[test]
     fn login_progress_keeps_browser_link_and_input_visible() {

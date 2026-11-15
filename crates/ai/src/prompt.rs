@@ -2,6 +2,56 @@
 
 use crate::model::Effort;
 
+fn supported_language(tag: &str) -> Option<&'static str> {
+    let primary = tag.trim().split(['-', '_', '.', '@']).next()?;
+    if primary.eq_ignore_ascii_case("ko") {
+        Some("ko")
+    } else if primary.eq_ignore_ascii_case("en") {
+        Some("en")
+    } else {
+        None
+    }
+}
+
+fn preferred_language(explicit: &str, system: impl IntoIterator<Item = impl AsRef<str>>) -> &'static str {
+    if !explicit.trim().is_empty() {
+        return supported_language(explicit).unwrap_or("en");
+    }
+    system.into_iter().find_map(|tag| supported_language(tag.as_ref())).unwrap_or("en")
+}
+
+/// Resolve a presentation language once for a conversation or run, never through mutable
+/// process-wide state. The desktop currently supports English and Korean.
+pub fn response_language(explicit: &str) -> String {
+    if !explicit.trim().is_empty() {
+        return preferred_language(explicit, std::iter::empty::<&str>()).into();
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        preferred_language(explicit, sys_locale::get_locales()).into()
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        preferred_language(explicit, std::iter::empty::<&str>()).into()
+    }
+}
+
+/// Instructions govern human-facing prose only, not the project being made or raw evidence.
+pub fn with_response_language(text: &str, language: &str) -> String {
+    let name = match supported_language(language) {
+        Some("ko") => "Korean (한국어)",
+        _ => "English",
+    };
+    format!(
+        "Response language: {name}.\n\
+         Write all messages the person sees in this language, including progress updates, explanations, questions, choices and final answers. \
+         A response-language declaration in the current request overrides this conversation's earlier language default. \
+         An explicit request from the person for a different output language takes precedence over both. \
+         Keep code, identifiers, commands, file contents, tool JSON, quoted evidence and raw technical logs in their original or project-conventional language. \
+         This is the conversation language, not an instruction to translate the software being built.\n\n{text}"
+    )
+}
+
 const METHOD: &str = "\
 You are the investigator inside OMCA, an app that shows people how a piece of software works and helps them rebuild it. You work through tools that inspect programs, apps, files, websites and devices. Every analysis tool returns evidence with an id (ev_…).
 
@@ -35,22 +85,28 @@ The user is experienced. Be terse and precise: addresses, symbol names, evidence
 /// start (part of the stable, cached prefix). `memory` is false when the model isn't offered the
 /// memory tools: told to call `core_brief_write` first, a small model asks for it and does nothing
 /// else (#417).
-pub fn system_prompt(beginner: bool, clean_room: bool, investigation: &str, memory: bool) -> String {
+pub fn system_prompt(beginner: bool, clean_room: bool, investigation: &str, memory: bool, language: &str) -> String {
     let mode = if clean_room {
         "Analysis mode: Clean room. Nothing inside a target is looked at (its code, files or page source): only the tools that work from outside run, and the rest are refused. If the question needs a look inside, say so: the person can switch on Deep mode."
     } else {
         "Analysis mode: Deep. Use every tool that helps: our own engines read a target's code, files and pages, and Ghidra adds its decompiler when it's installed. Evidence records which engine produced it."
     };
     let memory = if memory { format!("\n\n{MEMORY}") } else { String::new() };
-    format!("{METHOD}{memory}\n\n{}\n\n{mode}\n\n## Investigation so far\n{investigation}\n", if beginner { BEGINNER } else { EXPERIENCED })
+    with_response_language(
+        &format!("{METHOD}{memory}\n\n{}\n\n{mode}\n\n## Investigation so far\n{investigation}\n", if beginner { BEGINNER } else { EXPERIENCED }),
+        language,
+    )
 }
 
 /// Preamble for an agent CLI, which brings its own system prompt: we add our method and memory
 /// loop, and point it at our MCP tools.
-pub fn cli_preamble(beginner: bool) -> String {
-    format!(
-        "{METHOD}\n\n{MEMORY}\n\n{}\n\nUse the omca MCP tools for all analysis (start with core_session_show, core_targets_list and core_investigation_show). The MCP server shares this investigation with the app; use its open targets and recorded findings rather than inventing ids or maintaining a separate findings file.\n\n## Request\n",
-        if beginner { BEGINNER } else { EXPERIENCED }
+pub fn cli_preamble(beginner: bool, language: &str) -> String {
+    with_response_language(
+        &format!(
+            "{METHOD}\n\n{MEMORY}\n\n{}\n\nUse the omca MCP tools for all analysis (start with core_session_show, core_targets_list and core_investigation_show). The MCP server shares this investigation with the app; use its open targets and recorded findings rather than inventing ids or maintaining a separate findings file.\n\n## Request\n",
+            if beginner { BEGINNER } else { EXPERIENCED }
+        ),
+        language,
     )
 }
 
@@ -66,9 +122,9 @@ mod tests {
 
     #[test]
     fn prompt_switches_mode_and_effort() {
-        let b = system_prompt(true, true, "{}", true);
+        let b = system_prompt(true, true, "{}", true, "ko");
         assert!(b.contains("plain, everyday words") && b.contains("Clean room") && b.contains("core_handoff_write"));
-        let e = system_prompt(false, false, "{\"brief\":null}", true);
+        let e = system_prompt(false, false, "{\"brief\":null}", true, "en");
         assert!(e.contains("terse") && e.contains("Deep") && e.contains("{\"brief\":null}"));
         assert_eq!(choose_effort(None), Effort::High, "high by default, even for a quick question");
         assert_eq!(choose_effort(Some(Effort::Medium)), Effort::Medium, "an explicit setting wins");
@@ -76,12 +132,22 @@ mod tests {
 
     #[test]
     fn a_prompt_without_memory_tools_names_none_of_them() {
-        let lean = system_prompt(false, true, "{}", false);
+        let lean = system_prompt(false, true, "{}", false, "en");
         for tool in ["core_brief_write", "core_plan_update", "core_handoff_write", "core_finding_record"] {
             assert!(!lean.contains(tool), "{tool} isn't offered, so it isn't asked for");
         }
         assert!(lean.contains("Cite evidence ids") && lean.contains("Clean room"), "the method stays");
-        let cli = cli_preamble(false);
+        let cli = cli_preamble(false, "en");
         assert!(cli.contains("core_brief_write") && cli.contains("core_handoff_write"), "agent apps get the memory loop");
+    }
+
+    #[test]
+    fn system_locale_and_explicit_language_follow_the_same_precedence_as_the_ui() {
+        assert_eq!(preferred_language("", ["ko-KR", "en-US"]), "ko");
+        assert_eq!(preferred_language("en-US", ["ko-KR"]), "en");
+        assert_eq!(preferred_language("ko_KR.UTF-8", ["en-US"]), "ko");
+        assert_eq!(preferred_language("", ["ja-JP", "ko-KR"]), "ko");
+        assert_eq!(preferred_language("", ["ja-JP"]), "en");
+        assert_eq!(preferred_language("unsupported", ["ko-KR"]), "en");
     }
 }

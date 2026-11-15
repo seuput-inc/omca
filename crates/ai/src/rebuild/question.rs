@@ -109,11 +109,13 @@ pub fn ask(
     };
     let entry = hub.selected_backend(&cfg, ws, backend)?;
     let deep = settings.deep_mode;
+    let response_language = crate::prompt::response_language(&settings.language);
     super::refuse_deep_session_reuse_in_clean_room(ws, &entry.config.model, &entry.options.args, deep)?;
     let cli = |resume: Option<String>| -> Box<dyn Conversation> {
         let spec = CliSpec {
             question: true,
             deep,
+            response_language: response_language.clone(),
             logs: logs.clone(),
             resume,
             key: crate::cli_agents::acp::key_for(&hub.keys, &entry.config.model, &entry.config.name, entry.config.kind),
@@ -136,6 +138,7 @@ pub fn ask(
             let spec = CliSpec {
                 question: true,
                 deep,
+                response_language: response_language.clone(),
                 logs: logs.clone(),
                 resume: session,
                 preamble: Some(PREAMBLE.into()),
@@ -150,14 +153,21 @@ pub fn ask(
             let host = Arc::new(ReadOnlyHost(EngineHost(engine)));
             let slot = hub.build_model(&entry)?;
             let toolsets = [Toolset::Core, Toolset::Build].into_iter().collect();
-            let conv =
-                crate::agent::ApiConversation::start_with(host, vec![slot], LoopConfig { prices: cfg.prices.clone(), ..LoopConfig::default() }, toolsets)?;
+            let conv = crate::agent::ApiConversation::start_with(
+                host,
+                vec![slot],
+                LoopConfig { response_language: response_language.clone(), prices: cfg.prices.clone(), ..LoopConfig::default() },
+                toolsets,
+            )?;
             (Box::new(conv), AnsweredFrom::TheFiles, None)
         }
     };
-    let prompt = |from| match from {
-        AnsweredFrom::BuildersSession => format!("{}\n\nQuestion: {question}", context(ws)),
-        AnsweredFrom::TheFiles => format!("{PREAMBLE}{}\n\nQuestion: {question}", context(ws)),
+    let prompt = |from| {
+        let text = match from {
+            AnsweredFrom::BuildersSession => format!("{}\n\nQuestion: {question}", context(ws)),
+            AnsweredFrom::TheFiles => format!("{PREAMBLE}{}\n\nQuestion: {question}", context(ws)),
+        };
+        crate::prompt::with_response_language(&text, &response_language)
     };
     // Read the builder's total before the question starts: a build turn that finishes meanwhile
     // may advance the same session, and the fork's total includes that too.

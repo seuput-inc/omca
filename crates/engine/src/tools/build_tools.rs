@@ -374,7 +374,12 @@ fn build_command_run(ctx: &mut Ctx<'_>, params: Value) -> Result<ToolOutput, Too
     let (shell, flag) = if cfg!(windows) { ("cmd", "/C") } else { ("sh", "-c") };
     let cancel = ctx.cancel.clone();
     ctx.report(None, format!("Running {}", p.command.chars().take(120).collect::<String>()));
-    let out = Process::new(shell)
+    let process = Process::new(shell);
+    let process = match craft_anything_engines::game::managed_rust(&ctx.session.settings.engine_store_dir()).first() {
+        Some(rust) => craft_anything_engines::game::rust_process(&rust.program, process),
+        None => process,
+    };
+    let out = process
         .args([flag, p.command.as_str()])
         .cwd(&app)
         .timeout(Duration::from_secs(p.timeout_secs.unwrap_or(600).clamp(1, 7200)))

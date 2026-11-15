@@ -25,15 +25,37 @@ pub fn specs() -> Vec<ToolSpec> {
             run: engines_list,
         },
         ToolSpec {
+            id: "engines_latest",
+            title: "Check the latest engine version",
+            summary: "Resolve the latest stable Godot, Rust or Unity Editor for this computer from official publisher metadata, including the official installer hash. Does not download or install the engine. Unreal uses the official Epic Games Launcher.",
+            beginner: "Checks which stable engine version can be installed.",
+            toolset: Toolset::Setup,
+            effects: Effects::ACCESSES_NETWORK,
+            requires: Requires::Nothing,
+            input_schema: schema_of::<InstallParams>,
+            run: engines_latest,
+        },
+        ToolSpec {
             id: "engines_install",
             title: "Install an engine",
-            summary: "Download and install an engine into OMCA's own folder: `ghidra` (Deep mode, with its Java), `godot`, or any engine with a pinned download (`adb`, `jadx`…). Every download is checked against its published SHA-256. Unity and Unreal need their vendors' installers and accounts: on Windows the installer (Unity Hub, the Epic Games Launcher) is downloaded, its publisher checked, and opened for the person; elsewhere they get the download page.",
+            summary: "Install Godot, Rust or Unity Editor at the latest stable or an explicit stable version alongside existing versions. Official installer hashes are checked. Rust stays in private CARGO_HOME/RUSTUP_HOME without changing the person's toolchains. Unity uses the official CLI without accepting licences. Unreal downloads and verifies only the official launcher installer; sign-in and engine installation remain in that launcher.",
             beginner: "Installs a helper program for you.",
             toolset: Toolset::Setup,
-            effects: Effects::ACCESSES_NETWORK.union(Effects::WRITES_FILESYSTEM).union(Effects::LAUNCHES_PROCESS),
+            effects: Effects::ACCESSES_NETWORK.union(Effects::WRITES_FILESYSTEM).union(Effects::LAUNCHES_PROCESS).union(Effects::EXECUTES_FOREIGN_CODE),
             requires: Requires::Nothing,
             input_schema: schema_of::<InstallParams>,
             run: engines_install,
+        },
+        ToolSpec {
+            id: "engines_unity_setup",
+            title: "Set up a Unity account and licence",
+            summary: "Check sanitized Unity sign-in and licence status in the app-private Unity CLI home. Login and licence activation require a direct UI caller with explicit consent; agents, CLI and MCP cannot activate licences or accept terms. Personal activation additionally requires the person's explicit eligibility and terms confirmation.",
+            beginner: "Signs in with Unity's official browser and checks a licence.",
+            toolset: Toolset::Setup,
+            effects: Effects::ACCESSES_NETWORK.union(Effects::WRITES_FILESYSTEM).union(Effects::LAUNCHES_PROCESS).union(Effects::EXECUTES_FOREIGN_CODE),
+            requires: Requires::Nothing,
+            input_schema: schema_of::<UnitySetupParams>,
+            run: engines_unity_setup,
         },
         ToolSpec {
             id: "settings_show",
@@ -181,9 +203,9 @@ pub struct RemovePluginParams {
     pub id: String,
 }
 
-fn save_settings(ctx: &mut Ctx<'_>, next: Settings) -> Result<String, ToolError> {
+fn save_settings(ctx: &mut Ctx<'_>, update: impl FnOnce(&mut Settings) -> Result<(), ToolError>) -> Result<String, ToolError> {
     let path = ctx.session.config_dir().join("config.toml");
-    next.save_to(&path)?;
+    let next = ctx.session.settings.update_to(&path, update)?;
     ctx.session.settings = next;
     Ok(path.display().to_string())
 }
@@ -201,18 +223,18 @@ fn add_wasm_plugin(ctx: &mut Ctx<'_>, p: AddPluginParams, path: std::path::PathB
     if let Some(problem) = plugin.problem() {
         return Err(ToolError::invalid(problem));
     }
-    let mut next = ctx.session.settings.clone();
-    if plugin_id_taken(&next, &plugin.id) && !p.replace {
-        return Err(
-            ToolError::invalid(format!("There's already a plugin called {}.", plugin.id)).with_remediation("Pick another id, or pass replace to overwrite it.")
-        );
-    }
-    next.plugins.mcp.retain(|x| x.id != plugin.id);
-    match next.plugins.wasm.iter_mut().find(|x| x.id == plugin.id) {
-        Some(slot) => *slot = plugin.clone(),
-        None => next.plugins.wasm.push(plugin.clone()),
-    }
-    let path = save_settings(ctx, next)?;
+    let path = save_settings(ctx, |next| {
+        if plugin_id_taken(next, &plugin.id) && !p.replace {
+            return Err(ToolError::invalid(format!("There's already a plugin called {}.", plugin.id))
+                .with_remediation("Pick another id, or pass replace to overwrite it."));
+        }
+        next.plugins.mcp.retain(|x| x.id != plugin.id);
+        match next.plugins.wasm.iter_mut().find(|x| x.id == plugin.id) {
+            Some(slot) => *slot = plugin.clone(),
+            None => next.plugins.wasm.push(plugin.clone()),
+        }
+        Ok(())
+    })?;
     Ok(ToolOutput::Value(json!({
         "added": plugin.id,
         "kind": "wasm",
@@ -243,27 +265,24 @@ fn plugins_add(ctx: &mut Ctx<'_>, params: Value) -> Result<ToolOutput, ToolError
     if let Some(problem) = plugin.problem() {
         return Err(ToolError::invalid(problem));
     }
-    let mut next = ctx.session.settings.clone();
-    if next.plugins.wasm.iter().any(|x| x.id == plugin.id) {
-        if !p.replace {
-            return Err(ToolError::invalid(format!("There's already a plugin called {}.", plugin.id))
-                .with_remediation("Pick another id, or pass replace to overwrite it."));
-        }
-        next.plugins.wasm.retain(|x| x.id != plugin.id);
-    }
-    match next.plugins.mcp.iter().position(|x| x.id == plugin.id) {
-        Some(_) if !p.replace => {
-            return Err(ToolError::invalid(format!("There's already a plugin called {}.", plugin.id))
-                .with_remediation("Pick another id, or pass replace to overwrite it."));
-        }
-        Some(i) => {
-            if let Some(slot) = next.plugins.mcp.get_mut(i) {
-                *slot = plugin.clone();
+    let path = save_settings(ctx, |next| {
+        if next.plugins.wasm.iter().any(|x| x.id == plugin.id) {
+            if !p.replace {
+                return Err(ToolError::invalid(format!("There's already a plugin called {}.", plugin.id))
+                    .with_remediation("Pick another id, or pass replace to overwrite it."));
             }
+            next.plugins.wasm.retain(|x| x.id != plugin.id);
         }
-        None => next.plugins.mcp.push(plugin.clone()),
-    }
-    let path = save_settings(ctx, next)?;
+        match next.plugins.mcp.iter().position(|x| x.id == plugin.id) {
+            Some(_) if !p.replace => {
+                return Err(ToolError::invalid(format!("There's already a plugin called {}.", plugin.id))
+                    .with_remediation("Pick another id, or pass replace to overwrite it."));
+            }
+            Some(i) => next.plugins.mcp[i] = plugin.clone(),
+            None => next.plugins.mcp.push(plugin.clone()),
+        }
+        Ok(())
+    })?;
     Ok(ToolOutput::Value(
         json!({"added": plugin.id, "runs": plugin.place(), "asks_before_each_call": true, "path": path, "next": "plugins_refresh reads its tools"}),
     ))
@@ -271,14 +290,15 @@ fn plugins_add(ctx: &mut Ctx<'_>, params: Value) -> Result<ToolOutput, ToolError
 
 fn plugins_remove(ctx: &mut Ctx<'_>, params: Value) -> Result<ToolOutput, ToolError> {
     let p: RemovePluginParams = parse_params(params)?;
-    let mut next = ctx.session.settings.clone();
-    let before = next.plugins.mcp.len() + next.plugins.wasm.len();
-    next.plugins.mcp.retain(|x| x.id != p.id);
-    next.plugins.wasm.retain(|x| x.id != p.id);
-    if next.plugins.mcp.len() + next.plugins.wasm.len() == before {
-        return Err(ToolError::new(ErrorCode::NotFound, format!("No plugin called {}.", p.id)).with_remediation("See plugins_list for the ids."));
-    }
-    let path = save_settings(ctx, next)?;
+    let path = save_settings(ctx, |next| {
+        let before = next.plugins.mcp.len() + next.plugins.wasm.len();
+        next.plugins.mcp.retain(|x| x.id != p.id);
+        next.plugins.wasm.retain(|x| x.id != p.id);
+        if next.plugins.mcp.len() + next.plugins.wasm.len() == before {
+            return Err(ToolError::new(ErrorCode::NotFound, format!("No plugin called {}.", p.id)).with_remediation("See plugins_list for the ids."));
+        }
+        Ok(())
+    })?;
     Ok(ToolOutput::Value(json!({"removed": p.id, "path": path})))
 }
 
@@ -369,8 +389,11 @@ pub struct NoParams {}
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct InstallParams {
-    /// `ghidra`, `godot`, `unity`, `unreal`, or an engine id from engines_list.
+    /// `ghidra`, `godot`, `rust`, `unity`, `unreal`, or an engine id from engines_list.
     pub engine: String,
+    /// Stable game-engine version to install, or absent for the latest stable release.
+    #[serde(default)]
+    pub version: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -418,9 +441,55 @@ fn engines_list(ctx: &mut Ctx<'_>, _params: Value) -> Result<ToolOutput, ToolErr
     })))
 }
 
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct UnitySetupParams {
+    /// check, login, activate_personal, or activate_subscription.
+    action: String,
+    #[serde(default)]
+    personal_eligibility_and_terms_confirmed: bool,
+}
+
+fn engines_unity_setup(ctx: &mut Ctx<'_>, params: Value) -> Result<ToolOutput, ToolError> {
+    let p: UnitySetupParams = parse_params(params)?;
+    let action = match p.action.as_str() {
+        "check" => game::UnityAction::Check,
+        "login" => game::UnityAction::Login,
+        "activate_personal" if p.personal_eligibility_and_terms_confirmed => game::UnityAction::ActivatePersonal,
+        "activate_personal" => return Err(ToolError::new(ErrorCode::ConsentRequired, "Confirm Unity Personal eligibility and its terms in the app first.")),
+        "activate_subscription" => game::UnityAction::ActivateSubscription,
+        _ => return Err(ToolError::invalid("Unknown Unity setup action.")),
+    };
+    if action != game::UnityAction::Check && ctx.caller != crate::Caller::Ui {
+        return Err(ToolError::new(ErrorCode::ConsentRequired, "Unity sign-in and licence activation can only be started by the person in the app."));
+    }
+    let c = ctx.cancel.clone();
+    let cancel: craft_anything_platform::process::Cancel = Arc::new(move || c.is_cancelled());
+    ctx.report(None, "Waiting for the official Unity setup step.");
+    let status = game::unity_setup(&ctx.session.settings.engine_store_dir(), action, Some(cancel), &|_, _| {})?;
+    Ok(ToolOutput::Value(json!(status)))
+}
+
+fn engines_latest(ctx: &mut Ctx<'_>, params: Value) -> Result<ToolOutput, ToolError> {
+    let p: InstallParams = parse_params(params)?;
+    let builder = match p.engine.trim().to_ascii_lowercase().as_str() {
+        "godot" => Builder::Godot,
+        "rust" => Builder::Rust,
+        "unity" => Builder::Unity,
+        _ => return Err(ToolError::new(ErrorCode::NotSupported, "Stable-release discovery supports Godot, Rust and Unity.")),
+    };
+    let c = ctx.cancel.clone();
+    let cancel: craft_anything_platform::process::Cancel = Arc::new(move || c.is_cancelled());
+    let release = game::Release::resolve(builder, p.version.as_deref(), Some(&cancel))?;
+    Ok(ToolOutput::Value(json!(release)))
+}
+
 fn engines_install(ctx: &mut Ctx<'_>, params: Value) -> Result<ToolOutput, ToolError> {
     let p: InstallParams = parse_params(params)?;
     let id = p.engine.trim().to_ascii_lowercase();
+    if p.version.is_some() && !matches!(id.as_str(), "godot" | "rust" | "unity") {
+        return Err(ToolError::invalid("An explicit version is supported for Godot, Rust and Unity."));
+    }
     let store = ctx.session.settings.engine_store_dir();
     let c = ctx.cancel.clone();
     let cancel: craft_anything_platform::process::Cancel = Arc::new(move || c.is_cancelled());
@@ -433,15 +502,20 @@ fn engines_install(ctx: &mut Ctx<'_>, params: Value) -> Result<ToolOutput, ToolE
             };
             craft_anything_engines::ghidra::get::install(&store, Some(cancel), &progress)?
         }
-        "godot" => {
+        "godot" | "rust" | "unity" => {
             let progress = |got: u64, total: Option<u64>| {
                 let fraction = total.filter(|t| *t > 0).map(|t| got as f32 / t as f32);
-                ctx.report(fraction, format!("Godot: {} of {} MB", mb(got), total.map_or("?".into(), |t| mb(t).to_string())));
+                ctx.report(fraction, format!("{id}: {} of {} MB", mb(got), total.map_or("?".into(), |t| mb(t).to_string())));
             };
-            game::install_godot(&store, Some(cancel), &progress)?
+            let builder = match id.as_str() {
+                "rust" => Builder::Rust,
+                "unity" => Builder::Unity,
+                _ => Builder::Godot,
+            };
+            game::Release::resolve(builder, p.version.as_deref(), Some(&cancel))?.install(&store, Some(cancel), &progress)?
         }
-        "unity" | "unreal" if game::installer(if id == "unity" { Builder::Unity } else { Builder::Unreal }).is_some() => {
-            let b = if id == "unity" { Builder::Unity } else { Builder::Unreal };
+        "unreal" if game::installer(Builder::Unreal).is_some() => {
+            let b = Builder::Unreal;
             let progress = |got: u64, total: Option<u64>| {
                 let fraction = total.filter(|t| *t > 0).map(|t| got as f32 / t as f32);
                 ctx.report(fraction, format!("{} installer: {} of {} MB", b.name(), mb(got), total.map_or("?".into(), |t| mb(t).to_string())));
@@ -450,8 +524,8 @@ fn engines_install(ctx: &mut Ctx<'_>, params: Value) -> Result<ToolOutput, ToolE
             game::run_installer(&file)?;
             return Ok(ToolOutput::Value(json!({"installer_opened": file.display().to_string(), "engine": id})));
         }
-        "unity" | "unreal" => {
-            let b = if id == "unity" { Builder::Unity } else { Builder::Unreal };
+        "unreal" => {
+            let b = Builder::Unreal;
             return Err(ToolError::new(
                 ErrorCode::NotSupported,
                 format!("{} needs its own installer and account, so it can't be installed for you.", b.name()),
@@ -513,9 +587,11 @@ pub fn with_setting(settings: &Settings, key: &str, value: Value) -> Result<Sett
 
 fn settings_set(ctx: &mut Ctx<'_>, params: Value) -> Result<ToolOutput, ToolError> {
     let p: SetParams = parse_params(params)?;
-    let next = with_setting(&ctx.session.settings, &p.key, p.value)?;
     let path = ctx.session.config_dir().join("config.toml");
-    next.save_to(&path)?;
+    let next = ctx.session.settings.update_to(&path, |current| {
+        *current = with_setting(current, &p.key, p.value)?;
+        Ok(())
+    })?;
     ctx.session.settings = next;
     Ok(ToolOutput::Value(json!({"set": p.key, "path": path.display().to_string()})))
 }
@@ -524,6 +600,94 @@ fn settings_set(ctx: &mut Ctx<'_>, params: Value) -> Result<ToolOutput, ToolErro
 mod tests {
     use super::*;
     use crate::{CallOptions, Caller, Engine};
+
+    #[test]
+    fn unity_legal_consent_cannot_be_supplied_by_agents_or_auto_mode() {
+        let mut session = crate::testing::session();
+        session.settings.ask_before_running = false;
+        session.settings.auto_mode = true;
+        let engine = Engine::new(session);
+        let params = json!({"action":"activate_personal","personal_eligibility_and_terms_confirmed":true});
+        for caller in [Caller::Agent, Caller::Cli, Caller::Mcp] {
+            let opts = CallOptions::new(caller).with_consent(crate::Consent::Granted);
+            assert_eq!(engine.call("engines_unity_setup", params.clone(), opts).unwrap_err().code, ErrorCode::ConsentRequired);
+        }
+        assert_eq!(engine.call("engines_unity_setup", params, CallOptions::new(Caller::Ui)).unwrap_err().code, ErrorCode::ConsentRequired);
+        let opts = CallOptions::new(Caller::Ui).with_consent(crate::Consent::Granted);
+        assert_eq!(engine.call("engines_unity_setup", json!({"action":"activate_personal"}), opts).unwrap_err().code, ErrorCode::ConsentRequired);
+    }
+
+    #[test]
+    fn settings_set_preserves_newer_persisted_fields() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut a = crate::Session::isolated(dir.path());
+        a.settings.engines.only_configured = true;
+        let b = crate::Session::isolated(dir.path());
+        let engine = Engine::new(a);
+        let mut newer = b.settings;
+        newer.language = "ko".into();
+        newer.projects_dir = Some(dir.path().join("new-projects"));
+        newer.build.max_rounds = 19;
+        newer.ai.insert("synthetic".into(), toml::Value::String("new".into()));
+        newer.save_to(&dir.path().join("config.toml")).unwrap();
+        engine.call("settings_set", json!({"key": "auto_mode", "value": false}), CallOptions::new(Caller::Cli)).unwrap();
+        let saved = Settings::load_from(&dir.path().join("config.toml"));
+        assert_eq!(saved.language, "ko");
+        assert_eq!(saved.projects_dir, newer.projects_dir);
+        assert_eq!(saved.build.max_rounds, 19);
+        assert_eq!(saved.ai, newer.ai);
+        assert!(!saved.auto_mode);
+        assert!(engine.session().settings.engines.only_configured);
+    }
+
+    #[test]
+    fn settings_set_concurrent_separate_updates_survive() {
+        let dir = tempfile::tempdir().unwrap();
+        let first = Engine::new(crate::Session::isolated(dir.path()));
+        let second = Engine::new(crate::Session::isolated(dir.path()));
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+        std::thread::scope(|scope| {
+            for (engine, key, value) in [(first, "language", json!("ko")), (second, "build.max_rounds", json!(17))] {
+                let barrier = barrier.clone();
+                scope.spawn(move || {
+                    barrier.wait();
+                    engine.call("settings_set", json!({"key": key, "value": value}), CallOptions::new(Caller::Cli)).unwrap();
+                });
+            }
+        });
+        let saved = Settings::load_from(&dir.path().join("config.toml"));
+        assert_eq!(saved.language, "ko");
+        assert_eq!(saved.build.max_rounds, 17);
+    }
+
+    #[test]
+    fn settings_set_rejects_unusable_persisted_data_without_changing_it() {
+        for text in ["not = [valid", "version = 999\nlanguage = 'future'\n"] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("config.toml");
+            let engine = Engine::new(crate::Session::isolated(dir.path()));
+            std::fs::write(&path, text).unwrap();
+            assert!(engine.call("settings_set", json!({"key": "language", "value": "ko"}), CallOptions::new(Caller::Cli)).is_err());
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), text);
+            assert!(engine.session().settings.language.is_empty());
+            assert!(!path.with_extension("toml.broken").exists());
+        }
+    }
+
+    #[test]
+    fn settings_set_plugin_changes_preserve_other_sessions_changes() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = Engine::new(crate::Session::isolated(dir.path()));
+        let b = Engine::new(crate::Session::isolated(dir.path()));
+        b.call("settings_set", json!({"key": "language", "value": "ko"}), CallOptions::new(Caller::Cli)).unwrap();
+        b.call("plugins_add", json!({"id": "one", "command": "synthetic"}), CallOptions::new(Caller::Cli)).unwrap();
+        a.call("plugins_add", json!({"id": "two", "command": "synthetic"}), CallOptions::new(Caller::Cli)).unwrap();
+        a.call("plugins_remove", json!({"id": "one"}), CallOptions::new(Caller::Cli)).unwrap();
+        let saved = Settings::load_from(&dir.path().join("config.toml"));
+        assert_eq!(saved.language, "ko");
+        assert_eq!(saved.plugins.mcp.len(), 1);
+        assert_eq!(saved.plugins.mcp[0].id, "two");
+    }
 
     #[test]
     fn a_setting_is_changed_by_its_dotted_key_and_checked() {

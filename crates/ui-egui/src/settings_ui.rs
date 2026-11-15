@@ -241,7 +241,7 @@ fn updates(app: &mut CraftApp, ui: &mut Ui) {
     });
     ui.hyperlink_to(tr("Releases"), "https://github.com/seuput-inc/omca/releases");
     ui.add_space(space::SM);
-    ui.add(egui::Label::new(tr("Use Releases or your package manager to update this installation.")).wrap());
+    ui.add(egui::Label::new(tr("Check for a new version, then download, install, and restart here. Your accounts and projects are kept.")).wrap());
 }
 
 fn language(app: &mut CraftApp, ui: &mut Ui) {

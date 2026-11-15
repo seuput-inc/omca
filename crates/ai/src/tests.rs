@@ -7,6 +7,140 @@ use serde_json::{Value, json};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpListener;
 
+thread_local! {
+    static ENABLED_READ_PAUSE: std::cell::RefCell<Option<(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+pub(super) fn pause_enabled_after_read() {
+    ENABLED_READ_PAUSE.with(|pause| {
+        if let Some((read, resume)) = pause.borrow_mut().take() {
+            read.send(()).unwrap();
+            resume.recv_timeout(Duration::from_secs(10)).unwrap();
+        }
+    });
+}
+
+#[test]
+fn shared_hub_field_edits_preserve_a_concurrent_model_change() {
+    let (h, _dir) = hub();
+    add(&h, "A", BackendKind::Openai, "https://api.openai.com/v1", None);
+    let h = Arc::new(h);
+    let (read, read_rx) = std::sync::mpsc::channel();
+    let (resume, resume_rx) = std::sync::mpsc::channel();
+    let enabled = {
+        let h = h.clone();
+        std::thread::spawn(move || {
+            ENABLED_READ_PAUSE.with(|pause| *pause.borrow_mut() = Some((read, resume_rx)));
+            h.set_enabled("A", false).unwrap()
+        })
+    };
+    read_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+    let (started, started_rx) = std::sync::mpsc::channel();
+    let (finished, finished_rx) = std::sync::mpsc::channel();
+    let model = {
+        let h = h.clone();
+        std::thread::spawn(move || {
+            started.send(()).unwrap();
+            let result = h.set_model("A", "new-model").unwrap();
+            finished.send(()).unwrap();
+            result
+        })
+    };
+    started_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+    if let Ok(guard) = h.backend_edits.try_lock() {
+        drop(guard);
+        finished_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+    }
+    resume.send(()).unwrap();
+    assert!(enabled.join().unwrap());
+    assert!(model.join().unwrap());
+    let cfg = AiConfig::from_table(&Settings::load_from(&h.settings_path()).ai).unwrap();
+    let backend = cfg.get("A").unwrap();
+    assert!(!backend.config.enabled);
+    assert_eq!(backend.config.model, "new-model");
+}
+
+#[test]
+fn settings_writers_hubs_merge_stale_and_concurrent_changes() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.toml");
+    let make_hub = || {
+        let mut session = craft_anything_engine::testing::session();
+        session.settings = Settings::load_from(&path);
+        AiHub::with_stores(Arc::new(Engine::new(session)), path.clone(), KeyStore::file_only(dir.path().join("keys.toml")))
+    };
+    let initial = make_hub();
+    for name in ["A", "B"] {
+        initial
+            .add_backend(
+                BackendConfig { name: name.into(), kind: BackendKind::Openrouter, model: "old".into(), base_url: None, ssh_host: None, enabled: true },
+                None,
+            )
+            .unwrap();
+    }
+    let a = make_hub();
+    let b = make_hub();
+    let mut latest = Settings::load_from(&path);
+    latest.theme = "studio-light".into();
+    latest.language = "ko".into();
+    latest.save_to(&path).unwrap();
+    b.set_model("B", "new").unwrap();
+    a.set_enabled("A", false).unwrap();
+    let saved = Settings::load_from(&path);
+    let cfg = AiConfig::from_table(&saved.ai).unwrap();
+    assert_eq!((saved.theme.as_str(), saved.language.as_str()), ("studio-light", "ko"));
+    assert!(!cfg.get("A").unwrap().config.enabled);
+    assert_eq!(cfg.get("B").unwrap().config.model, "new");
+
+    let a = make_hub();
+    let b = make_hub();
+    let barrier = Arc::new(std::sync::Barrier::new(2));
+    std::thread::scope(|scope| {
+        let barrier_a = barrier.clone();
+        scope.spawn(move || {
+            barrier_a.wait();
+            a.set_command("A", Some("first")).unwrap();
+        });
+        scope.spawn(move || {
+            barrier.wait();
+            b.set_model("B", "concurrent").unwrap();
+        });
+    });
+    let cfg = AiConfig::from_table(&Settings::load_from(&path).ai).unwrap();
+    assert_eq!(cfg.get("A").unwrap().options.command.as_deref(), Some("first"));
+    assert_eq!(cfg.get("B").unwrap().config.model, "concurrent");
+}
+
+#[test]
+fn settings_writers_selection_preserves_unrelated_latest_settings() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.toml");
+    let mut session = craft_anything_engine::testing::session();
+    let mut cfg = AiConfig::default();
+    for name in ["A", "B"] {
+        cfg.upsert(BackendEntry {
+            config: BackendConfig { name: name.into(), kind: BackendKind::AgentCli, model: "copilot".into(), base_url: None, ssh_host: None, enabled: true },
+            options: BackendOptions::default(),
+        });
+    }
+    session.settings.ai = cfg.to_table().unwrap();
+    session.settings.save_to(&path).unwrap();
+    let context = ModelContext { backend: cfg.get("A").unwrap().clone(), directory: None };
+    let mut latest = Settings::load_from(&path);
+    latest.language = "ko".into();
+    cfg.backends[1].options.cli_model = Some("new".into());
+    latest.ai = cfg.to_table().unwrap();
+    latest.save_to(&path).unwrap();
+    let options = BackendOptions { cli_model: Some("chosen".into()), ..Default::default() };
+    assert!(config::save_agent_selection(&mut session, &path, &context, options).unwrap());
+    let saved = Settings::load_from(&path);
+    let cfg = AiConfig::from_table(&saved.ai).unwrap();
+    assert_eq!(saved.language, "ko");
+    assert_eq!(cfg.get("A").unwrap().options.cli_model.as_deref(), Some("chosen"));
+    assert_eq!(cfg.get("B").unwrap().options.cli_model.as_deref(), Some("new"));
+}
+
 /// #1096, #1239: an AI's timeout_secs is its own limit on a streamed answer, starting included;
 /// unset or 0 leaves the defaults.
 #[test]
@@ -368,10 +502,10 @@ fn an_api_transcript_is_resumed_only_in_its_mode() {
     let path = dir.path().join("transcript.json");
     let history = vec![crate::model::Msg::user_text("a Deep conversation")];
     crate::context::save(&path, &history, true).unwrap();
-    assert!(h.start_builder(&entry, false, Some(path.clone()), true).unwrap().resumed(), "Deep continues a Deep transcript");
-    assert!(!h.start_builder(&entry, false, Some(path.clone()), false).unwrap().resumed(), "Clean room starts fresh");
+    assert!(h.start_builder(&entry, false, Some(path.clone()), true, "en").unwrap().resumed(), "Deep continues a Deep transcript");
+    assert!(!h.start_builder(&entry, false, Some(path.clone()), false, "en").unwrap().resumed(), "Clean room starts fresh");
     crate::context::save(&path, &history, false).unwrap();
-    assert!(!h.start_builder(&entry, false, Some(path), true).unwrap().resumed(), "Deep doesn't continue a Clean room transcript");
+    assert!(!h.start_builder(&entry, false, Some(path), true, "en").unwrap().resumed(), "Deep doesn't continue a Clean room transcript");
 }
 
 /// Compare checks either position; enabled named and automatic chat choices still work.

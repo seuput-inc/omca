@@ -435,3 +435,76 @@ pub(super) fn follow_up(message: &str, kind: &dyn TargetKind, api_loop: bool) ->
     let check = next_check(api_loop);
     format!("The person asks: \"{message}\"\n\nMake the change in app/, then {build}, fix any errors. {check} Reply with 1-3 plain sentences on what changed.")
 }
+
+#[cfg(test)]
+mod language_tests {
+    use super::*;
+
+    #[derive(Default)]
+    struct Captured {
+        sent: Vec<(bool, String)>,
+        pending: bool,
+    }
+
+    impl Conversation for Captured {
+        fn send(&mut self, text: &str) {
+            self.sent.push((false, text.into()));
+            self.pending = true;
+        }
+        fn retry(&mut self, text: &str) {
+            self.sent.push((true, text.into()));
+            self.pending = true;
+        }
+        fn poll(&mut self) -> Vec<AgentEvent> {
+            if !std::mem::take(&mut self.pending) {
+                return Vec::new();
+            }
+            vec![AgentEvent::TurnDone {
+                backend: "Synthetic".into(),
+                input_tokens: 1,
+                output_tokens: 0,
+                tokens_unknown: false,
+                cost_usd: None,
+                cost_is_estimate: false,
+            }]
+        }
+        fn answer_consent(&mut self, _: &str, _: bool) {}
+        fn stop(&mut self) {}
+        fn is_busy(&self) -> bool {
+            self.pending
+        }
+    }
+
+    #[test]
+    fn response_language_reaches_initial_followup_resume_extractor_and_retry_messages() {
+        for (language, header) in [("ko", "Response language: Korean (한국어)."), ("en", "Response language: English.")] {
+            let dir = tempfile::tempdir().unwrap();
+            let mut ws = Workspace::create(dir.path(), "Notes", "Create a notes app", TargetRef::None).unwrap();
+            ws.manifest.stack = "Rust + egui (eframe)".into();
+            let mut worker = super::super::tests::check_worker(&ws, false);
+            worker.response_language = language.into();
+            worker.attach(&ws).unwrap();
+            let cx = BriefCx { ws: &ws, deep: false, ghidra: false, editor: None, assets: false, image_model: None, sees_pictures: false };
+            let initial = brief(&AppKind, &cx, None);
+            let messages = [
+                initial.clone(),
+                follow_up("Respond in Japanese and explain `cargo build`.", &AppKind, false),
+                continue_prompt(&AppKind, false),
+                resumed_elsewhere(&initial, "Earlier English answer.", None),
+                extract_brief(&ws.root),
+                added_prompt(&["Keep app/main.rs unchanged.".into()]),
+            ];
+            let mut conversation = Captured::default();
+            for message in &messages {
+                worker.converse_turn(&mut ws, &mut conversation, message, false).unwrap();
+            }
+            worker.converse_turn(&mut ws, &mut conversation, &messages[2], true).unwrap();
+            for (index, ((retry, sent), original)) in conversation.sent.iter().zip(messages.iter().chain(std::iter::once(&messages[2]))).enumerate() {
+                assert!(sent.starts_with(header), "{language}: {sent}");
+                assert!(sent.ends_with(original), "the brief, user request, code and earlier reply remain verbatim");
+                assert_eq!(sent.matches("Response language:").count(), 1, "a message is wrapped only once");
+                assert_eq!(*retry, index == messages.len(), "only the last message is a retry");
+            }
+        }
+    }
+}

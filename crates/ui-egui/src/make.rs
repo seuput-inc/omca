@@ -146,6 +146,7 @@ pub fn hero(app: &mut CraftApp, ui: &mut Ui, w: f32) {
                 let ready = !app.state.make.request.trim().is_empty()
                     && url_problem(&app.state.make.url).is_none()
                     && app.creating.is_none()
+                    && (app.state.make.folder.is_some() || craft_anything_engine::workspace::project_name_problem(&app.state.make.name).is_none())
                     && crate::provider_connect::selection_ready(app);
                 let start = widgets::primary_sized(ui, Some("sparkles"), "Start", ready, size::CONTROL_XL, theme::BODY);
                 let start = if ready { start } else { start.on_disabled_hover_text(tr("Say what you want first.")) };

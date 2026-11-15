@@ -110,7 +110,7 @@ impl Availability {
 
 /// The engine. Cheap to share behind an `Arc`.
 pub struct Engine {
-    registry: Registry,
+    registry: std::sync::Arc<Registry>,
     session: Mutex<Session>,
 }
 
@@ -120,7 +120,7 @@ pub struct EngineRef(pub std::sync::Weak<Engine>);
 
 impl Engine {
     pub fn new(session: Session) -> Self {
-        Engine { registry: Registry::with_all_tools(), session: Mutex::new(session) }
+        Engine { registry: std::sync::Arc::new(Registry::with_all_tools()), session: Mutex::new(session) }
     }
 
     /// The engine as most apps use it: shared, with tools from higher layers (`extra`, e.g. the
@@ -139,7 +139,17 @@ impl Engine {
         std::sync::Arc::new_cyclic(|me| {
             let mut session = session;
             session.ext.insert(std::sync::Arc::new(EngineRef(me.clone())));
-            Engine { registry: Registry::new(tools).with_runtime(runtime), session: Mutex::new(session) }
+            Engine { registry: std::sync::Arc::new(Registry::new(tools).with_runtime(runtime)), session: Mutex::new(session) }
+        })
+    }
+
+    /// Run the same tools with an independent session. No project, target, cache or extension
+    /// from this engine crosses the boundary; the new engine's self-reference points to itself.
+    pub fn fork_session(&self, session: Session) -> std::sync::Arc<Engine> {
+        std::sync::Arc::new_cyclic(|me| {
+            let mut session = session;
+            session.ext.insert(std::sync::Arc::new(EngineRef(me.clone())));
+            Engine { registry: self.registry.clone(), session: Mutex::new(session) }
         })
     }
 
@@ -272,6 +282,14 @@ impl Engine {
                 err = err.with_details(serde_json::json!({"reason": "wrong_os", "tool": spec.id}));
             }
             return Err(err);
+        }
+        // Licence consent is always per human action, even when Auto mode or project policy
+        // permits ordinary code execution. Tool parameters cannot impersonate the caller.
+        if spec.id == "engines_unity_setup"
+            && params.get("action").and_then(Value::as_str) != Some("check")
+            && (opts.caller != Caller::Ui || opts.consent != Consent::Granted)
+        {
+            return Err(ToolError::new(ErrorCode::ConsentRequired, "Unity account and licence changes need your explicit action in the app."));
         }
         if spec.effects.needs_consent() && opts.consent != Consent::Granted {
             let allowed = !session.settings.ask_before_running || session.project.as_ref().is_some_and(|p| p.is_allowed(spec.id));

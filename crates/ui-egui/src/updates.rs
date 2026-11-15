@@ -1,7 +1,9 @@
-//! Native release checks and verified installation through craft-update's platform helpers.
+//! Native release checks and OMCA-signed installation through the platform update helper.
 use crate::i18n::{tr, trf};
+use craft_anything_platform::update::{self as self_update, Installation};
 use craft_update::pins::{Choice, Pins};
-use craft_update::{App, Http, Paths, Platform, Release, Stop, self_update};
+use craft_update::{App, Http, Paths, Release, Stop};
+use std::sync::Arc;
 use std::sync::mpsc::{Receiver, TryRecvError, channel};
 
 pub const APP: App =
@@ -31,6 +33,7 @@ pub struct Updates {
     worker: Option<Receiver<Reply>>,
     installing: bool,
     restart: Option<self_update::Restart>,
+    stop: Option<Arc<Stop>>,
 }
 impl Updates {
     /// Read the previous update result when the first desktop frame can show it.
@@ -48,14 +51,14 @@ impl Updates {
                 .as_ref()
                 .ok()
                 .and_then(|release| release.as_ref())
-                .is_some_and(|release| !cfg!(target_os = "macos") && self_update::is_self_updating(&APP) && self_update::release_installs(&APP, release));
+                .is_some_and(|release| Installation::current().is_ok_and(|install| release_has_update(release, install.package)));
             (result, installable)
         });
     }
 
     fn check_using(&mut self, ctx: &egui::Context, check: impl FnOnce() -> (Result<Option<Release>, String>, bool) + Send + 'static) {
         self.open = true;
-        if self.worker.is_some() {
+        if self.worker.is_some() || self.installing || self.restart.is_some() {
             return;
         }
         self.message = tr("Checking for updates…");
@@ -75,13 +78,30 @@ impl Updates {
         }
     }
     fn install(&mut self, ctx: &egui::Context, release: Release) {
+        let stop = Arc::new(Stop::default());
+        self.stop = Some(Arc::clone(&stop));
         self.install_using(ctx, move || {
-            let install =
-                self_update::current(&APP).ok_or(tr("This installation is managed externally. Update it with its package manager or open Releases."))?;
-            let platform = Platform::current().ok_or(tr("No installer is available for this platform."))?;
+            stable_choice()?;
+            let install = Installation::current()?;
             let http = Http::new(concat!("OMCA/", env!("CARGO_PKG_VERSION")))?;
             let paths = Paths::for_app(&APP)?;
-            self_update::prepare_update(&APP, &install, &release, platform, &http, &paths, &Stop::default(), &mut |_| {}, &stable_choice, Some(VERSION))
+            let version = release.version_label().trim_start_matches('v').to_owned();
+            let asset_name = self_update::asset_name(install.package, &version);
+            let url = |name: &str| {
+                craft_update::release::expected_download_url(APP.repo, &release.tag, name).ok_or(tr("No installer is available for this platform."))
+            };
+            let manifest =
+                http.get_bytes(&url(&format!("{asset_name}.manifest.json"))?, 16 * 1024)?.ok_or("The release has no signed OMCA update manifest.")?;
+            let signature = http.get_bytes(&url(&format!("{asset_name}.sig"))?, 64)?.ok_or("The release has no OMCA update signature.")?;
+            let verified = self_update::verify_manifest(&manifest, &signature, VERSION, &version, install.package)?;
+            let details = verified.manifest();
+            let artifact = paths.cache.join(&asset_name);
+            http.download(&url(&details.asset)?, &artifact, details.size, &details.sha256, &stop, &mut |_| {})?;
+            stable_choice()?;
+            stop.check()?;
+            let prepared = self_update::prepare(install, manifest, signature, &artifact, VERSION, &version, &paths.cache)?;
+            stop.check()?;
+            Ok(prepared)
         });
     }
 
@@ -104,10 +124,8 @@ impl Updates {
     }
     /// Returns true while installing: the caller pauses editing and starting work until restart.
     pub fn show(&mut self, ctx: &egui::Context, safe_to_install: bool) -> bool {
-        if std::mem::take(&mut self.read_outcome_requested)
-            && let Ok(paths) = Paths::for_app(&APP)
-        {
-            self.apply_outcome(self_update::take_outcome(&paths, VERSION));
+        if std::mem::take(&mut self.read_outcome_requested) {
+            self.apply_outcome(self_update::take_outcome());
         }
         let reply = self.worker.as_ref().map(Receiver::try_recv);
         match reply {
@@ -118,6 +136,7 @@ impl Updates {
             }
             Some(Ok(Reply::Installed(result))) => {
                 self.worker = None;
+                self.stop = None;
                 match result {
                     Ok(restart) => {
                         self.restart = Some(restart);
@@ -125,13 +144,14 @@ impl Updates {
                     }
                     Err(error) => {
                         self.installing = false;
-                        self.message = error;
+                        self.message = tr(&error);
                     }
                 }
             }
             Some(Err(TryRecvError::Disconnected)) => {
                 self.worker = None;
                 self.installing = false;
+                self.stop = None;
                 self.message = tr("The update worker stopped unexpectedly. Try checking again.");
             }
             _ => {}
@@ -139,7 +159,6 @@ impl Updates {
         if self.restart.is_some() {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         } else if self.installing && ctx.input(|i| i.viewport().close_requested()) {
-            // The platform helper may be replacing files. Keep this process alive until it finishes.
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
         }
         if self.worker.is_some() {
@@ -177,6 +196,13 @@ impl Updates {
                                 .add_enabled(safe_to_install && self.worker.is_none() && self.restart.is_none(), egui::Button::new(tr("Update and restart")))
                                 .clicked();
                         }
+                        if self.installing
+                            && self.restart.is_none()
+                            && let Some(stop) = &self.stop
+                            && ui.button(tr("Cancel")).clicked()
+                        {
+                            stop.cancel();
+                        }
                         again = ui.add_enabled(self.worker.is_none() && !self.installing, egui::Button::new(tr("Check again"))).clicked();
                     });
                 });
@@ -198,7 +224,7 @@ impl Updates {
             }
             Some(self_update::Outcome::Failed(error)) => {
                 self.open = true;
-                self.message = trf("The update failed: {error}", &[("error", &error)]);
+                self.message = trf("The update failed: {error}", &[("error", &tr(&error))]);
             }
             None => {}
         }
@@ -230,9 +256,14 @@ impl Updates {
     }
 }
 
-/// Runs the Windows installation helper before opening a normal application window.
+/// Runs the installation helper before opening a normal application window on either platform.
 pub fn finish_helper() -> Option<Result<(), String>> {
-    self_update::finish(&APP, &std::env::args_os().skip(1).collect::<Vec<_>>())
+    self_update::finish(&std::env::args_os().skip(1).collect::<Vec<_>>())
+}
+
+fn release_has_update(release: &Release, package: self_update::Package) -> bool {
+    let name = self_update::asset_name(package, release.version_label().trim_start_matches('v'));
+    [name.clone(), format!("{name}.manifest.json"), format!("{name}.sig")].iter().all(|name| release.assets.iter().any(|a| &a.name == name))
 }
 
 #[cfg(test)]
@@ -279,24 +310,6 @@ mod tests {
             assert!(updates.release.is_none());
             assert!(!updates.installable);
             assert!(finish_helper().is_none());
-            #[cfg(target_os = "linux")]
-            {
-                // This child has an isolated XDG data folder; never consume a user's update record.
-                let paths = Paths::for_app(&APP).expect("isolated app folders");
-                std::fs::create_dir_all(paths.logs()).expect("test logs");
-                let failure = paths.logs().join("self-update-error.txt");
-                std::fs::write(&failure, "test installer failure").expect("test failure record");
-                let mut restarted = Updates::default();
-                restarted.startup();
-                draw(&mut restarted, true, false);
-                assert!(restarted.open);
-                assert!(restarted.message.contains("test installer failure"));
-                assert!(!failure.exists(), "the helper result is consumed exactly once");
-                restarted.open = false;
-                restarted.startup();
-                draw(&mut restarted, true, false);
-                assert!(!restarted.open, "the old failure must not reappear on the next start");
-            }
 
             return;
         }
@@ -414,6 +427,35 @@ mod tests {
         let mut updates = Updates { worker: Some(rx), installing: true, ..Updates::default() };
         assert!(!updates.show(&egui::Context::default(), false));
         assert!(updates.message.contains("stopped unexpectedly"));
+    }
+    #[test]
+    fn cancelling_the_visible_download_releases_the_app_without_a_restart() {
+        use egui_kittest::kittest::Queryable as _;
+        let stop = Arc::new(Stop::default());
+        let worker_stop = Arc::clone(&stop);
+        let (finish, wait) = channel();
+        let mut updates = Updates { open: true, stop: Some(Arc::clone(&stop)), ..Updates::default() };
+        updates.install_using(&egui::Context::default(), move || {
+            wait.recv().map_err(|_| "cancel test ended".to_owned())?;
+            worker_stop.check()?;
+            panic!("a cancelled download must not reach preparation");
+        });
+        let mut harness = egui_kittest::Harness::builder().with_size(egui::vec2(640.0, 360.0)).build_ui(|ui| {
+            updates.show(ui.ctx(), true);
+        });
+        harness.run_steps(2);
+        harness.get_by_label("Cancel").click();
+        harness.run_steps(2);
+        assert!(stop.check().is_err());
+        finish.send(()).expect("worker waiting");
+        drop(harness);
+        let reply = updates.worker.as_ref().expect("worker").recv_timeout(std::time::Duration::from_secs(5)).expect("cancel finishes");
+        let (tx, rx) = channel();
+        tx.send(reply).expect("receiver");
+        updates.worker = Some(rx);
+        draw(&mut updates, true, false);
+        assert!(!updates.installing);
+        assert!(updates.restart.is_none());
     }
     #[test]
     fn the_manual_result_window_is_visible_without_network() -> Result<(), String> {

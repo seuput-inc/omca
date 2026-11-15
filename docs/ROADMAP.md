@@ -88,6 +88,23 @@ Issues are ranked by people affected and how badly, after leaving out what's alr
 | Any | M3: R3.3, R3.9, R3.11 | — | Open lane |
 | Later | R4.1 macOS CLI, R4.2 Managed tier | **decision** | Not before M5 |
 
+## OMCA 0.4.5 release scope
+
+### R5.8 OMCA setup, recovery, and project workflows
+Owner: maintainers · Status: in progress
+
+Directly requested by the fork's maintainer on 2026-11-15.
+
+- [x] Implement account/model state and actionable error-recovery presentation.
+- [x] Implement OMCA-signed download, transactional installation, restart, and credential preservation.
+- [x] Keep the Simple / Advanced switch visible and correct Windows caption drag hit regions.
+- [x] Isolate parallel project execution, preserve registered services, and create named children under a shared projects folder.
+- [x] Carry system or explicitly selected language into user-facing agent requests without translating code or raw diagnostics.
+- [x] Add versioned in-app Godot/Rust/Unity setup and the approved official Epic Launcher handoff for Unreal.
+- [ ] Finish independent review corrections and final native/offscreen UI checks before publishing.
+- [ ] Verify Windows MSI/portable helpers, private Unity-profile boundary, and platform regressions from the exact release head.
+- [ ] Publish 0.4.5 with signed update assets, verify public downloads, and update the installed Mac app.
+
 ---
 
 ## M5 Works for real people
