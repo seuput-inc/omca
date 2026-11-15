@@ -6,7 +6,7 @@ workspace clippy, layers, fmt and the secret scan of all history were clean. Chi
 
 ## What works, and how it was checked
 
-### Builder execution approvals (unreleased)
+### OMCA 0.4.7 builder execution approvals (candidate)
 
 User-started API builders approve engine execution/device-effect consent automatically across
 toolsets. Previously only Build tools were approved; a Runtime request such as
@@ -27,6 +27,13 @@ coverage passed. Installed CLI configuration with `ask_before_running=false` and
 `auto_mode=true` was saved and retained across an app restart; a deliberately missing capture
 program reached `bad_input`, not `consent_required`, without `--allow-run`.
 No original program, paid provider request, account operation, or licence acceptance was run.
+
+[PR #6](https://github.com/seuput-inc/omca/pull/6) was squash-merged after an
+[independent runtime verdict](https://github.com/seuput-inc/omca/pull/6#issuecomment-6897825960).
+The verifier reproduced the parent rejection and forced a fresh head compile before
+observing the passing Worker regression. It also ran 29 command-policy regressions
+and the Unity legal-consent boundary. The mandatory pre-push gate passed on the PR
+head. Final 0.4.7 package verification and publication are pending.
 
 ### OMCA 0.4.6 unified workspace and native images
 
