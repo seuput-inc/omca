@@ -187,6 +187,7 @@ mod tests {
     fn selection_saves_preserve_external_settings_and_other_backends() {
         for tool in [false, true] {
             let (hub, path) = selection_clients();
+            let only_configured = hub.engine.session().settings.engines.only_configured;
             let mut disk = hub.engine.session().settings.clone();
             disk.language = "zh-hans".into();
             let mut config = AiConfig::from_table(&disk.ai).unwrap();
@@ -204,7 +205,9 @@ mod tests {
             assert_eq!(config.get("Other"), Some(&other));
             assert_eq!(config.roles.get("builder").map(String::as_str), Some("Other"));
             assert!(config.get("OpenCode").unwrap().options.cli_model.is_none());
-            assert_eq!(hub.engine.session().settings, saved);
+            let session = hub.engine.session();
+            assert_eq!(toml::Value::try_from(&session.settings).unwrap(), toml::Value::try_from(&saved).unwrap());
+            assert_eq!(session.settings.engines.only_configured, only_configured);
         }
     }
 

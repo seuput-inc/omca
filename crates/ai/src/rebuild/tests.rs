@@ -843,8 +843,12 @@ mod typed_retries {
             assert_eq!(result.unwrap(), "Done");
             assert_eq!(waits, [3], "typed provider wait overrides the text hint");
             assert_eq!(agent.sent.len(), 2);
-            assert_eq!(agent.sent[0], "Build the requested app");
-            assert_eq!(agent.sent[1], if saved { crate::failure::CONTINUE_TURN } else { "Build the requested app" });
+            assert!(agent.sent[0].ends_with("Build the requested app"));
+            if saved {
+                assert_eq!(agent.sent[1], crate::failure::CONTINUE_TURN);
+            } else {
+                assert_eq!(agent.sent[1], agent.sent[0], "a stateless retry resends the whole request");
+            }
         }
     }
 
@@ -1046,7 +1050,7 @@ mod typed_retries {
             let before_retry = &requests[requests.len() - 2];
             let after_retry = requests.last().unwrap();
             assert_eq!(before_retry, after_retry, "retry must continue the same model request");
-            assert_eq!(after_retry.iter().filter(|m| m.role == Speaker::User && m.text() == "Build the notes app").count(), 1);
+            assert_eq!(after_retry.iter().filter(|m| m.role == Speaker::User && m.text().ends_with("Build the notes app")).count(), 1);
             let calls = rx.try_iter().filter(|e| matches!(e, RunEvent::Agent(AgentEvent::ToolStarted { tool, .. }) if tool == "build_file_write")).count();
             assert_eq!(calls, usize::from(write_first), "a completed write is not replayed");
             if write_first {
@@ -1132,7 +1136,9 @@ mod typed_retries {
         assert_eq!(std::fs::read_to_string(ws.root.join("attempts")).unwrap(), "attempt\n");
         assert!(result.is_err());
         assert!(waits.is_empty());
-        assert_eq!(std::fs::read_to_string(ws.root.join("prompts")).unwrap(), "Make a notes app\n");
+        let prompt = std::fs::read_to_string(ws.root.join("prompts")).unwrap();
+        assert!(prompt.trim_end().ends_with("Make a notes app"));
+        assert_eq!(prompt.matches("Make a notes app").count(), 1);
         assert_eq!(cli.session_id().as_deref(), Some("interrupted-session"));
         assert_eq!(cli.last_failure().unwrap().kind, FailureKind::Unknown);
         assert!(!cli.is_busy());
@@ -1175,7 +1181,7 @@ mod typed_retries {
             concat!(
                 "#!/bin/sh\nif [ \"$2\" = '--help' ]; then printf '%s\\n' '--format --standalone'; exit 0; fi\n",
                 // The message comes on stdin.
-                "cat >> prompts; printf '\\n' >> prompts\n",
+                "cat >> prompts; printf '\\n===\\n' >> prompts\n",
                 "if [ ! -f rate-was-returned ]; then touch rate-was-returned\n",
                 "printf '%s\\n' '{\"type\":\"error\",\"error\":{\"name\":\"APIError\",\"data\":{\"message\":\"Please retry in 19.052906498s.\",\"statusCode\":429,\"isRetryable\":true}}}'\nexit 1\nfi\n",
                 "printf '%s\\n' '{\"type\":\"text\",\"part\":{\"text\":\"Built the app\"}}'\n"
@@ -1192,7 +1198,11 @@ mod typed_retries {
             "Built the app"
         );
         assert_eq!(waits, [21]);
-        assert_eq!(std::fs::read_to_string(ws.root.join("prompts")).unwrap(), "Make a notes app\nMake a notes app\n");
+        let prompts = std::fs::read_to_string(ws.root.join("prompts")).unwrap();
+        let attempts: Vec<_> = prompts.split_terminator("\n===\n").collect();
+        assert_eq!(attempts.len(), 2);
+        assert!(attempts[0].ends_with("Make a notes app"));
+        assert_eq!(attempts[0], attempts[1], "the stateless retry receives the whole original request");
         assert!(cli.session_id().is_none());
         assert!(cli.last_failure().is_none(), "successful retry clears the prior failure");
         assert!(!cli.is_busy());
@@ -1908,6 +1918,7 @@ mod picking_up_a_build {
         std::fs::write(&agent, format!("#!/bin/sh\nfor last; do :; done\nprintf '%s\\n===\\n' \"$last\" >> '{}'\necho Done.\n", prompts.display())).unwrap();
         std::fs::set_permissions(&agent, std::fs::Permissions::from_mode(0o755)).unwrap();
         let engine = Arc::new(Engine::new(craft_anything_engine::testing::session()));
+        engine.session().settings.language = "en".into();
         let hub = AiHub::with_stores(engine, dir.path().join("settings.toml"), crate::KeyStore::file_only(dir.path().join("keys.toml")));
         let mut cfg = hub.config();
         cfg.upsert(crate::BackendEntry {
@@ -1927,15 +1938,52 @@ mod picking_up_a_build {
         Bench { _dir: dir, hub, projects, prompts }
     }
 
-    /// #923: starting a run is what loads the keys, for builders that use this session's tools.
     #[test]
-    fn a_run_loads_the_saved_asset_keys_into_its_session() {
+    fn a_run_uses_saved_asset_keys_for_its_generated_assets() {
+        struct AssetCheck;
+        impl Check for AssetCheck {
+            fn id(&self) -> &'static str {
+                "asset"
+            }
+            fn run(&self, cx: &mut CheckCx) -> Result<CheckResult, ToolError> {
+                cx.call("assets_image_generate", json!({"prompt": "a crate", "save_as": "crate.png"}))?;
+                Ok(CheckResult::new(self.id(), cx.round, true, "Generated the asset."))
+            }
+        }
+        struct AssetKind;
+        impl TargetKind for AssetKind {
+            fn id(&self) -> &'static str {
+                "asset"
+            }
+            fn words(&self) -> KindWords {
+                FlakyKind.words()
+            }
+            fn detect(&self, _: &DetectCx) -> Option<u32> {
+                Some(2000)
+            }
+            fn default_stack(&self, _: &DetectCx) -> &'static str {
+                "Anything"
+            }
+            fn goal(&self) -> &'static str {
+                "a thing"
+            }
+            fn checks(&self, _: &Workspace) -> Vec<Box<dyn Check>> {
+                vec![Box::new(AssetCheck)]
+            }
+        }
         let b = bench();
+        let mut providers = craft_anything_engines::assets::AssetProviders::built_in();
+        providers.register(Arc::new(AssetStandIn));
+        b.hub.engine.session().settings.assets.image_model = Some("flux-schnell".into());
+        b.hub.engine.session().ext.insert(Arc::new(providers));
         b.hub.set_asset_key("fal", "k-1").unwrap();
-        let ws = Workspace::create(&b.projects, "x", "Build a notes app", TargetRef::None).unwrap();
-        let _ = try_it(&b, &ws);
-        let keys = b.hub.engine.session().ext.get::<craft_anything_engine::tools::asset_tools::AssetKeys>().unwrap_or_default();
-        assert_eq!(keys.get("fal"), Some("k-1"));
+        let mut ws = Workspace::create(&b.projects, "x", "Build a notes app", TargetRef::None).unwrap();
+        ws.set_person(|m| m.generate_assets = true).unwrap();
+        let mut opts = RunOptions::default();
+        opts.kinds.register(Arc::new(AssetKind));
+        assert!(try_with(&b, &ws, opts).0);
+        assert_eq!(std::fs::read(ws.app_dir().join("crate.png")).unwrap(), b"png");
+        assert_eq!(Workspace::open(&ws.root).unwrap().assets().len(), 1);
     }
 
     fn try_it(b: &Bench, ws: &Workspace) -> (bool, Vec<feed::FeedItem>) {
@@ -2956,22 +3004,41 @@ fn a_caught_bug_leaves_a_status_the_person_can_act_on() {
     assert!(ok && !paused && message == "Ready.");
 }
 
-/// #923: with OpenRouter as the builder, every asset call said "No fal.ai key" with one saved. The
-/// project hasn't turned on generated assets, so nothing is sent or spent.
+struct AssetStandIn;
+
+impl craft_anything_engines::assets::AssetProvider for AssetStandIn {
+    fn id(&self) -> &'static str {
+        "fal"
+    }
+    fn name(&self) -> &'static str {
+        "stand-in"
+    }
+    fn generate(&self, key: &str, req: &craft_anything_engines::assets::AssetRequest) -> Result<craft_anything_engines::assets::Generated, ToolError> {
+        assert_eq!(key, "k-1");
+        Ok(craft_anything_engines::assets::Generated { url: "https://stand-in/crate.png".into(), bytes: b"png".to_vec(), cost_usd: req.listed_cost() })
+    }
+}
+
 #[test]
 fn a_saved_asset_key_gets_an_api_builders_tool_past_the_key_check() {
     let dir = tempfile::tempdir().unwrap();
-    let ws = Workspace::create(dir.path(), "x", "Make a game", TargetRef::None).unwrap();
+    let mut ws = Workspace::create(dir.path(), "x", "Make a game", TargetRef::None).unwrap();
     let mut worker = check_worker(&ws, false);
     worker.attach(&ws).unwrap();
-    let call =
-        |w: &Worker| w.engine.call("assets_image_generate", json!({"prompt": "a crate", "save_as": "crate.png"}), CallOptions::new(Caller::Ui)).err().unwrap();
-    assert_eq!(call(&worker).code, ErrorCode::BadSettings, "no key loaded yet");
+    let mut providers = craft_anything_engines::assets::AssetProviders::built_in();
+    providers.register(Arc::new(AssetStandIn));
+    worker.engine.session().settings.assets.image_model = Some("flux-schnell".into());
+    worker.engine.session().ext.insert(Arc::new(providers));
+    let call = |w: &Worker| w.engine.call("assets_image_generate", json!({"prompt": "a crate", "save_as": "crate.png"}), CallOptions::new(Caller::Ui));
+    assert_eq!(call(&worker).err().unwrap().code, ErrorCode::NoPermission);
+    ws.set_person(|m| m.generate_assets = true).unwrap();
+    assert_eq!(call(&worker).err().unwrap().code, ErrorCode::BadSettings, "no key loaded yet");
     let store = crate::KeyStore::file_only(dir.path().join("keys.toml"));
     store.set(crate::keys::FAL_KEY, "k-1").unwrap();
     worker.load_asset_keys(&store);
-    assert_eq!(call(&worker).code, ErrorCode::NoPermission);
-    assert!(worker.assets, "the brief and the tools go by the same read");
+    call(&worker).unwrap();
+    assert_eq!(std::fs::read(ws.app_dir().join("crate.png")).unwrap(), b"png");
+    assert_eq!(Workspace::open(&ws.root).unwrap().assets().len(), 1);
 }
 
 /// A worker over a test session and the workspace's feed, for check tests.
@@ -2981,7 +3048,7 @@ pub(crate) fn check_worker(ws: &Workspace, deep: bool) -> Worker {
     let (tx, _rx) = std::sync::mpsc::channel();
     Worker {
         wake: Default::default(),
-        response_language: crate::prompt::response_language(""),
+        response_language: "en".into(),
         engine: Arc::new(Engine::new(s)),
         tx,
         stop: CancelToken::default(),
@@ -4427,7 +4494,7 @@ fn a_session_left_on_another_computer_starts_a_new_one_from_the_project() {
     let (tx, rx) = std::sync::mpsc::channel();
     let mut w = Worker {
         wake: Default::default(),
-        response_language: crate::prompt::response_language(""),
+        response_language: "en".into(),
         engine: Arc::new(Engine::new(craft_anything_engine::testing::session())),
         tx,
         stop: CancelToken::default(),
@@ -4448,10 +4515,7 @@ fn a_session_left_on_another_computer_starts_a_new_one_from_the_project() {
     let reply = w.turn(&mut ws, &mut agent, "The person asks: make it blue", true, Some(first)).unwrap();
     assert_eq!(reply.trim(), "Carried on: yes");
     let sent = std::fs::read_to_string(bin.path().join("claude.last")).unwrap();
-    assert!(
-        sent.starts_with("THE BRIEF") && sent.contains("already under way") && sent.contains("app/") && sent.contains("notes app with a sidebar"),
-        "{sent}"
-    );
+    assert!(sent.contains("THE BRIEF") && sent.contains("already under way") && sent.contains("app/") && sent.contains("notes app with a sidebar"), "{sent}");
     assert_eq!(ws.manifest.agent_session.as_deref(), Some("new-1"), "the new session is the one kept");
     assert_eq!(Workspace::open(&ws.root).unwrap().manifest.agent_session.as_deref(), Some("new-1"));
     let events: Vec<RunEvent> = rx.try_iter().collect();

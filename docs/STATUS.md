@@ -35,6 +35,10 @@ Korean 1440 × 900 and 760 × 900 renders were inspected: the full new-project f
 approval controls remain visible at the narrow width.
 Layers, locks, tool metadata, schemas, formatting, translation coverage, and secrets passed.
 Final macOS packaging and Windows-native release verification remain pending.
+The full pre-push gate exposed stale language/session test assumptions and a real removed-backend
+selection bug. A rejected selection now leaves disk and memory unchanged. All 17 affected AI
+regressions passed after correction, including run-owned asset generation and retry history.
+The complete pre-push gate must pass before publication.
 
 Upstream security backports selected for this release:
 [`98b22ac`](https://github.com/storytold/craft-anything/commit/98b22ac3e2ab2b14543611c57820b1d345bc7877)
