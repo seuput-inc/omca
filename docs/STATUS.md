@@ -49,6 +49,10 @@ All 28 settings regressions passed, including legacy migration, cleanup interrup
 owner-only journals. The real exit-save child scenario and scoped UI exit regression passed.
 These checks use deterministic barriers and injected commit interruption, not a TLC proof or
 physical power-loss test.
+The headless capability table includes Unity setup and latest-release queries. Its five
+registration and CLI checks passed. A private-method-name allowlist was removed rather than
+pinning callback names; public capability checks remain. Windows release checks also cover
+exit recovery and keyboard-accessible help.
 
 Upstream security backports selected for this release:
 [`98b22ac`](https://github.com/storytold/craft-anything/commit/98b22ac3e2ab2b14543611c57820b1d345bc7877)
