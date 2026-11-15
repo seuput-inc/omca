@@ -2267,6 +2267,7 @@ fn a_new_project_can_start_in_a_folder_that_already_has_the_persons_files() {
     use craft_anything_engine::workspace::{ExistingFiles, Workspace};
     use craft_anything_ui_egui::state::Modal;
     let (d, mine) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let mine_path = mine.path().canonicalize().unwrap();
     std::fs::write(mine.path().join("index.html"), "<p>hi</p>").unwrap();
     let runs = StandIns::new();
     let (dir, r) = (d.path().to_path_buf(), runs.clone());
@@ -2288,11 +2289,11 @@ fn a_new_project_can_start_in_a_folder_that_already_has_the_persons_files() {
     h.state_mut().start_make();
     assert!(wait(&mut h, |a| a.creating.is_none() && a.workspace.is_some()), "made on a worker");
     let ws = Workspace::open(mine.path()).expect("the project is in the picked folder");
-    assert!(ws.manifest.app_in_root && ws.app_dir() == mine.path());
+    assert!(ws.manifest.app_in_root && ws.app_dir() == mine_path);
     assert_eq!(std::fs::read_to_string(mine.path().join("index.html")).unwrap(), "<p>hi</p>");
-    assert_eq!(runs.started(), [mine.path().to_path_buf()]);
-    assert!(h.state().settings.project_folders.contains(&mine.path().to_path_buf()), "it stays in the list");
-    assert!(wait(&mut h, |app| app.projects.iter().any(|w| w.root == mine.path())), "and is listed");
+    assert_eq!(runs.started(), [mine_path.clone()]);
+    assert!(h.state().settings.project_folders.contains(&mine_path), "it stays in the list");
+    assert!(wait(&mut h, |app| app.projects.iter().any(|w| w.root == mine_path)), "and is listed");
     assert_eq!(std::fs::read_dir(d.path()).map(|r| r.count()).unwrap_or(0), 0, "nothing in the projects folder");
 
     // The next folder with files uses the remembered answer.
@@ -2302,7 +2303,7 @@ fn a_new_project_can_start_in_a_folder_that_already_has_the_persons_files() {
     h.run_steps(2);
     assert!(h.state().state.modal.is_none() && h.state().state.make.existing == Some(ExistingFiles::Edit));
     h.state_mut().pause();
-    assert!(runs.finish(mine.path()));
+    assert!(runs.finish(&mine_path));
     h.run_steps(2);
 }
 
@@ -2313,6 +2314,7 @@ fn the_front_door_works_on_a_project_the_person_already_has() {
     use craft_anything_ai::rebuild::StandIns;
     use craft_anything_engine::workspace::{ExistingFiles, TargetRef, Workspace};
     let (d, mine, empty) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let mine_path = mine.path().canonicalize().unwrap();
     std::fs::write(mine.path().join("index.html"), "<p>hi</p>").unwrap();
     let runs = StandIns::new();
     let (dir, r) = (d.path().to_path_buf(), runs.clone());
@@ -2357,11 +2359,11 @@ fn the_front_door_works_on_a_project_the_person_already_has() {
     h.get_by_label("Start").click();
     assert!(wait(&mut h, |a| a.creating.is_none() && a.workspace.is_some()), "made on a worker");
     let ws = Workspace::open(mine.path()).expect("the project is the person's folder");
-    assert!(ws.manifest.app_in_root && ws.app_dir() == mine.path());
+    assert!(ws.manifest.app_in_root && ws.app_dir() == mine_path);
     assert_eq!(ws.manifest.target, TargetRef::None, "an address in the request isn't an original");
     assert_eq!(ws.manifest.name, mine.path().file_name().unwrap().to_string_lossy(), "named after its folder");
     assert_eq!(std::fs::read_to_string(mine.path().join("index.html")).unwrap(), "<p>hi</p>");
-    assert_eq!(runs.started(), [mine.path().to_path_buf()]);
+    assert_eq!(runs.started(), [mine_path.clone()]);
     assert_eq!(std::fs::read_dir(d.path()).map(|r| r.count()).unwrap_or(0), 0, "nothing in the projects folder");
 
     // Back on the door, the same folder is a project now, so it opens.
@@ -2370,7 +2372,7 @@ fn the_front_door_works_on_a_project_the_person_already_has() {
     h.run_steps(2);
     assert!(h.state().state.toasts.iter().any(|(text, err)| !*err && text.contains("already a project")));
     h.state_mut().pause();
-    assert!(runs.finish(mine.path()));
+    assert!(runs.finish(&mine_path));
     h.run_steps(2);
 }
 

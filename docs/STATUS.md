@@ -65,6 +65,11 @@ The fixture now uses the ordinary temporary-directory path. Run 43714705864 reac
 assertion, which compared ordinary and verbatim spellings lexically. That assertion now reads
 the actual file from the workspace path; file-location and approval behavior remain checked.
 A fresh exact-source Windows run is required before publication.
+Run 43716600311 passed those security checks, installed MSI/portable payloads, native runtime,
+image boundaries, updater, titlebar, and engine checks. The expanded UI smoke gate found two
+existing-project fixtures comparing canonical workspace paths with uncanonicalized temporary
+paths. Their expected identities now use the filesystem's canonical path while folder picks
+still supply the original path. Native UI verification must pass before release.
 
 Upstream security backports selected for this release:
 [`98b22ac`](https://github.com/storytold/craft-anything/commit/98b22ac3e2ab2b14543611c57820b1d345bc7877)
