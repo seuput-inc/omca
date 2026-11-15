@@ -8,12 +8,12 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/seuput-inc/omca/releases/download/v0.4.5/craft-anything-0.4.5-macos-aarch64.dmg"><img src="https://img.shields.io/badge/Install-macOS%20Apple%20silicon-111827?style=for-the-badge&amp;logo=apple&amp;logoColor=white" alt="Install for macOS Apple silicon"></a>
-  <a href="https://github.com/seuput-inc/omca/releases/download/v0.4.5/craft-anything-0.4.5-windows-x64.msi"><img src="https://img.shields.io/badge/Install-Windows%20x64-0078D4?style=for-the-badge" alt="Install for Windows x64"></a>
+  <a href="https://github.com/seuput-inc/omca/releases/download/v0.4.6/craft-anything-0.4.6-macos-aarch64.dmg"><img src="https://img.shields.io/badge/Install-macOS%20Apple%20silicon-111827?style=for-the-badge&amp;logo=apple&amp;logoColor=white" alt="Install for macOS Apple silicon"></a>
+  <a href="https://github.com/seuput-inc/omca/releases/download/v0.4.6/craft-anything-0.4.6-windows-x64.msi"><img src="https://img.shields.io/badge/Install-Windows%20x64-0078D4?style=for-the-badge" alt="Install for Windows x64"></a>
 </p>
 <p align="center">
-  Published release: <a href="https://github.com/seuput-inc/omca/releases/tag/v0.4.5">v0.4.5</a>
-  · <a href="https://github.com/seuput-inc/omca/releases/download/v0.4.5/craft-anything-0.4.5-windows-x64-portable.zip">Windows portable ZIP</a>
+  Published release: <a href="https://github.com/seuput-inc/omca/releases/tag/v0.4.6">v0.4.6</a>
+  · <a href="https://github.com/seuput-inc/omca/releases/download/v0.4.6/craft-anything-0.4.6-windows-x64-portable.zip">Windows portable ZIP</a>
 </p>
 
 ## What it is
@@ -51,14 +51,18 @@ only accounts signed into OMCA or API keys entered in OMCA. It does not discover
 installed CLI accounts, environment keys, or other apps' credentials. Legacy configuration stays
 on disk but cannot select an external agent for a desktop conversation or build.
 
-Every chat and build input shows its selected provider and model. Open **Change model** to
-search connected providers and choose the model for the next request. Switching models keeps
-the draft and conversation visible. Active or queued work must finish before switching.
+Every chat and build input shows its selected model, without account or provider labels.
+Open **Change model** to search available chat models from connected providers.
+Switching models keeps the draft and conversation visible. Active or queued work must finish before switching.
 Unavailable saved project builders require an explicit selection instead of a silent fallback.
 
-**Simple / Advanced** remains visible in both modes. Models & accounts shows model readiness
-and connected-account status separately. Failures show recovery guidance first, with original
-diagnostics in expandable, copyable details instead of a blind rerun.
+One workspace replaces Simple / Advanced: projects stay visible beside conversations and real
+result captures, with inspection tools, code, evidence, jobs and logs in contextual panels.
+Models & accounts separates model readiness from connected-account status. Failures show
+recovery guidance first, with original diagnostics in expandable, copyable details.
+
+Pretendard supplies the interface and Korean text. JetBrains Mono supplies code and logs.
+The unified workspace uses 15 px body text, 13 px captions, and 14 px code text.
 
 Choose a common projects folder once, then name each new project. OMCA creates a separate child
 folder without overwriting an existing project. Existing projects can still be opened directly.
@@ -72,6 +76,13 @@ identifiers, and original technical diagnostics keep their original language.
 The bundled provider runtime uses the public omp SDK with OMCA's private credential store.
 Provider-specific warnings and disabled-provider rules still apply. API keys use a separate
 connection form. The standalone CLI retains its separately configured agent integrations.
+
+OMCA runs its own Rust UI and agent engine; it uses omp's public SDK for provider authentication,
+model inference and native image generation, rather than wrapping the whole `omp` process.
+Eligible connected GPT accounts are preferred for images; fal.ai is optional for pictures and
+provides 3D generation. Unknown monetary charges or subscription-credit usage require explicit
+approval before generation and are not presented as free. Native failure does not trigger a
+hidden paid-provider fallback.
 
 Game-engine setup stays in the app. Godot and Rust use verified, versioned managed installs.
 Unity uses its official CLI, with separate sign-in and license actions. Personal-license

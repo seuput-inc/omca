@@ -17,6 +17,8 @@ pub mod failure_log;
 pub mod http;
 pub mod key_tools;
 pub mod keys;
+mod managed_image;
+pub use managed_image::install_managed_image_providers;
 pub mod model;
 pub mod model_options;
 pub mod model_tools;
@@ -1009,6 +1011,7 @@ impl AiHub {
     pub fn has_asset_keys(&self) -> bool {
         let providers = craft_anything_engines::assets::AssetProviders::built_in();
         providers.ids().into_iter().any(|id| self.has_asset_key(&providers, id))
+            || self.provider_client().image_capabilities().is_ok_and(|caps| caps.iter().any(|c| matches!(c.provider_id.as_str(), "openai" | "openai-codex")))
     }
 
     /// Save an asset provider's key (keychain first). Returns where it went.

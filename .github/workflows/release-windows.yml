@@ -66,6 +66,23 @@ jobs:
         run: |
           cargo test --locked -p craft-anything-engines --lib game::
           if ($LASTEXITCODE -ne 0) { throw 'Native game-engine regression failed' }
+      - name: Native image generation boundaries
+        shell: pwsh
+        run: |
+          cargo test --locked -p craft-anything-engine --lib asset_tools::tests
+          if ($LASTEXITCODE -ne 0) { throw 'Image provider permission or budget regression failed' }
+          cargo test --locked -p craft-anything-ai --lib managed_image::tests
+          if ($LASTEXITCODE -ne 0) { throw 'Native image decoding regression failed' }
+      - name: Provider runtime regressions
+        shell: pwsh
+        working-directory: provider-runtime
+        run: |
+          bun install --frozen-lockfile
+          if ($LASTEXITCODE -ne 0) { throw 'Provider runtime dependency installation failed' }
+          bun test
+          if ($LASTEXITCODE -ne 0) { throw 'Provider runtime regression failed' }
+          bun run check
+          if ($LASTEXITCODE -ne 0) { throw 'Provider runtime type check failed' }
       - name: Provider account runtime
         shell: bash
         run: |
@@ -134,6 +151,13 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Engine setup authorization regression failed' }
           cargo test -p craft-anything-ui-egui --lib engine_ui::tests
           if ($LASTEXITCODE -ne 0) { throw 'Engine setup UI regression failed' }
+      - name: Unified workspace regressions
+        shell: pwsh
+        run: |
+          cargo test --locked -p craft-anything-ui-egui --lib -- provider_connect::tests settings_ui::tests::picture_model
+          if ($LASTEXITCODE -ne 0) { throw 'Model selection regression failed' }
+          cargo test --locked -p craft-anything-ui-egui --test smoke -- legacy_preferences_share_navigation project_result_shows_the_check_capture_without_a_similarity_score
+          if ($LASTEXITCODE -ne 0) { throw 'Unified workspace regression failed' }
       - name: Attach to the release
         if: inputs.publish
         shell: pwsh

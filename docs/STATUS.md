@@ -6,6 +6,32 @@ workspace clippy, layers, fmt and the secret scan of all history were clean. Chi
 
 ## What works, and how it was checked
 
+### OMCA 0.4.6 unified workspace and native images
+
+One desktop workspace replaces the Simple/Advanced split. Projects stay visible beside
+conversations and actual check captures; inspection tools, code, evidence, jobs, and logs are
+contextual panels. The chat selector shows model names without account/provider labels and
+excludes unavailable connections. Account management remains in Settings.
+
+Connected OpenAI API-key and Codex accounts can use the pinned OMP SDK's native image routes.
+Credentials stay in OMCA's provider runtime. Eligible routes are discovered without generation
+requests; account entitlement is only established by a real provider response. Images are decoded,
+bounded, and saved as PNG; fal.ai remains optional for images and supplies 3D generation.
+
+Unknown image prices require explicit project approval before generation and are recorded as
+unknown, not free. Automatic mode refuses an unapproved unknown-cost request. A failed native
+request is not retried through another paid provider. Personal account generation and paid calls
+are not part of verification.
+
+Local verification passed: 16 provider-runtime tests and TypeScript checking, 16 asset-tool
+regressions, 13 AI bridge tests, two workspace smoke scenarios, and 13 typography, model-picker,
+and image-setting tests. Korean unified workspace snapshots were rendered at 1440 × 900.
+Pretendard supplies interface text and JetBrains Mono supplies code. Body text is 15 px,
+captions 13 px, and code 14 px; both palettes pass the existing WCAG AA contrast checks.
+Layers, locks, tool metadata, schemas, formatting, translation coverage, and secrets passed.
+Final macOS packaging and Windows-native release verification remain pending.
+
+
 ### OMCA 0.4.5 release work
 
 This fork uses only accounts connected directly in OMCA. The historical upstream CLI discovery
@@ -13,13 +39,13 @@ sections below do not describe the OMCA desktop credential policy.
 
 | Area | Implementation and verification |
 |---|---|
-| Settings and recovery | Model readiness, connected accounts, empty/loading/error states, actionable failures, and expandable original diagnostics. Native accessibility interactions and Korean offscreen rendering passed. Packaged installation verification remains a release gate. |
-| Signed app updates | Pinned Ed25519 manifests, verified downloads, same-install restart, macOS atomic exchange/rollback, Windows MSI and portable recovery. Six platform and eleven update-UI tests passed. A real macOS fixture updated 0.4.5 to 0.4.6 and preserved synthetic credentials. Windows native and published-download checks remain release gates. |
+| Settings and recovery | Model readiness, connected accounts, empty/loading/error states, actionable failures, and expandable original diagnostics. Native accessibility interactions, Korean offscreen rendering, and exact-source Mac/Windows installed payload verification passed for 0.4.5. |
+| Signed app updates | Pinned Ed25519 manifests, verified downloads, same-install restart, macOS atomic exchange/rollback, Windows MSI and portable recovery. Actual Mac and Windows signed helper replacement/restart preserved synthetic credentials. Windows run 43683200559 passed; public 0.4.5 update signatures and payload hashes were verified. |
 | Concurrent projects | Project-scoped engines, tool services, settings, cancellation, and language. Overlapping tool execution and scoped writes passed. Independent review corrections passed MCP/WASM service, alias, settings transaction, shared-hub, deferred replay, and interrupted-commit regressions. The corrected source passed independent review. |
 | Project folders | One common parent, a project name, automatic exclusive child creation, and existing-project opening. Collision and UI draft regressions passed; the Korean destination preview was rendered at 1440 × 1200. |
 | System language | Request-local language and explicit app override; original code and diagnostics are retained. Request-language, private-toolchain child-process, and five UI i18n tests passed. The Korean recovery screen was rendered and inspected. |
-| Game engines | Actual Godot 4.7.2 and private Rust 1.100.0 installs executed successfully; Rust also built an offline sample. Unity uses the official CLI and explicit account/license actions; full editor installation and legal acceptance were not performed. Unreal uses the official launcher and explicit completion confirmation. Windows private Unity-profile verification is a release gate. |
-| Window controls | The mode switch is visible in both modes. Seven pointer/status/consent regressions passed, and Korean Simple/Advanced snapshots were inspected. Native Windows pointer dragging has not been observed on this Mac; Windows command-level regressions are a release gate. |
+| Game engines | Actual Godot 4.7.2 and private Rust 1.100.0 installs executed successfully; Rust also built an offline sample. Unity uses the official CLI and explicit account/license actions; full editor installation and legal acceptance were not performed. Unreal uses the official launcher and explicit completion confirmation. Windows private Unity-profile and native engine regressions passed in run 43683200559. |
+| Window controls | The mode switch is visible in both modes. Seven pointer/status/consent regressions and Korean Simple/Advanced snapshots passed. Five Windows titlebar command-level regressions passed; physical Windows pointer dragging was not observed. |
 
 
 ### Local Codex discovery and sign-in (R2.2)

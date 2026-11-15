@@ -91,7 +91,7 @@ Issues are ranked by people affected and how badly, after leaving out what's alr
 ## OMCA 0.4.5 release scope
 
 ### R5.8 OMCA setup, recovery, and project workflows
-Owner: maintainers · Status: in progress
+Owner: maintainers · Status: done
 
 Directly requested by the fork's maintainer on 2026-11-15.
 
@@ -101,9 +101,19 @@ Directly requested by the fork's maintainer on 2026-11-15.
 - [x] Isolate parallel project execution, preserve registered services, and create named children under a shared projects folder.
 - [x] Carry system or explicitly selected language into user-facing agent requests without translating code or raw diagnostics.
 - [x] Add versioned in-app Godot/Rust/Unity setup and the approved official Epic Launcher handoff for Unreal.
-- [ ] Finish independent review corrections and final native/offscreen UI checks before publishing.
-- [ ] Verify Windows MSI/portable helpers, private Unity-profile boundary, and platform regressions from the exact release head.
-- [ ] Publish 0.4.5 with signed update assets, verify public downloads, and update the installed Mac app.
+- [x] Finish independent review corrections and final native/offscreen UI checks before publishing.
+- [x] Verify Windows MSI/portable helpers, private Unity-profile boundary, and platform regressions from the exact release head.
+- [x] Publish 0.4.5 with signed update assets, verify public downloads, and update the installed Mac app.
+
+### R5.9 Native GPT images and model-only chat selection
+Owner: maintainers · Status: in progress
+
+- [x] Remove provider/account labels from the chat model selector and filter unavailable connections.
+- [x] Add app-owned OpenAI Images and Codex image-tool routes without exporting credentials.
+- [x] Preserve project permission, explicit unknown-cost approval, cancellation, and original image formats.
+- [ ] Verify native image routing, PNG conversion, optional fal.ai, and rendered model selection.
+- [ ] Publish 0.4.6 and verify the installed update.
+
 
 ---
 

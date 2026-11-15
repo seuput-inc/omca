@@ -127,10 +127,9 @@ fn first_run_continue_is_reachable_at_the_smallest_window() {
 }
 
 #[test]
-fn simple_title_bar_keeps_only_the_essentials() {
+fn title_bar_keeps_essential_controls() {
     let mut h = harness(|| demo::app(demo::engine(Mode::Beginner, true)));
     h.run_steps(3);
-    assert!(h.query_by_label("Advanced").is_none(), "the mode switch lives in Settings in Simple mode");
     h.get_by_label("Settings");
     h.get_by_label("Clean room");
 }
@@ -333,8 +332,15 @@ fn a_game_project_shows_its_asset_spending_and_can_raise_the_budget() {
     let mut ws = Workspace::create(d.path(), "Snake", "A snake game", TargetRef::None).unwrap();
     ws.manifest.stack = "Unity".into();
     ws.save().unwrap();
-    ws.record_asset(AssetRecord { file: "Assets/Generated/crate.glb".into(), kind: "model".into(), prompt: "a crate".into(), cost_usd: 0.51, at_ms: 0 })
-        .unwrap();
+    ws.record_asset(AssetRecord {
+        file: "Assets/Generated/crate.glb".into(),
+        kind: "model".into(),
+        prompt: "a crate".into(),
+        cost_usd: 0.51,
+        cost_unknown: false,
+        at_ms: 0,
+    })
+    .unwrap();
     let root = ws.root.clone();
     let mut h = harness(move || {
         let mut a = demo::app(demo::engine(Mode::Beginner, true));
@@ -495,6 +501,36 @@ fn the_sidebar_lists_projects_and_moves_between_them() {
     h.get_by_label("Settings").click();
     h.run_steps(3);
     assert!(h.state().state.settings_open);
+}
+
+#[test]
+fn project_result_shows_the_check_capture_without_a_similarity_score() {
+    use craft_anything_engine::tools::web_common::{Image, encode_png};
+    use craft_anything_engine::workspace::{CheckResult, TargetRef, Workspace};
+    use craft_anything_ui_egui::state::FeedItem;
+
+    let dir = tempfile::tempdir().unwrap();
+    let ws = Workspace::create(dir.path(), "Game", "Build a game", TargetRef::None).unwrap();
+    let relative = std::path::PathBuf::from("checks/round-3/screenshot.png");
+    let capture = ws.root.join(&relative);
+    std::fs::create_dir_all(capture.parent().unwrap()).unwrap();
+    let png = encode_png(&Image { width: 2, height: 1, rgba: vec![255, 0, 0, 255, 0, 0, 255, 255] }).unwrap();
+    std::fs::write(capture, png).unwrap();
+    let mut check = CheckResult::new("app-screenshot", 3, true, "The program starts and draws.");
+    check.artifacts.push(relative);
+    let mut h = harness(move || {
+        let mut a = demo::app(demo::engine(Mode::Beginner, true));
+        a.workspace = Some(ws);
+        a.state.screen = Screen::Project;
+        a.state.feed.push(FeedItem::Check(check));
+        a
+    });
+    let start = Instant::now();
+    while h.query_by_label("Latest result capture").is_none() && start.elapsed() < Duration::from_secs(10) {
+        h.step();
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    h.get_by_label("Latest result capture");
 }
 
 #[test]
@@ -965,7 +1001,7 @@ fn website_choice_stays_picked_while_the_address_is_empty() {
 }
 
 #[test]
-fn mode_switch_and_deep_toggle() {
+fn deep_toggle_reaches_the_engine() {
     let store = tempfile::tempdir().unwrap();
     let empty = store.path().to_path_buf();
     let mut h = harness(move || {
@@ -974,16 +1010,6 @@ fn mode_switch_and_deep_toggle() {
         a
     });
     h.run_steps(3);
-    // Simple mode: the switch is in Settings.
-    h.state_mut().state.settings_open = true;
-    h.run_steps(3);
-    h.get_by_label("Advanced").click();
-    h.run_steps(4);
-    h.state_mut().state.settings_open = false;
-    h.run_steps(3);
-    assert_eq!(h.state().settings.mode, Mode::Experienced);
-    // The setting reaches the engine's session (it's what tools check).
-    assert!(wait(&mut h, |a| a.engine.try_session().is_some_and(|s| s.settings.mode == Mode::Experienced)));
     h.state_mut().set_deep(true);
     assert!(wait(&mut h, |a| a.engine.try_session().is_some_and(|s| s.settings.deep_mode && !s.clean_room())));
     // No Ghidra in the store: Deep mode offers it first. (Hover first, as a mouse does: the
@@ -993,9 +1019,6 @@ fn mode_switch_and_deep_toggle() {
     h.get_by_label("Not now").click();
     h.run_steps(3);
     assert_eq!(h.state().state.modal, None, "Not now closes it");
-    h.get_by_label("Simple").click();
-    h.run_steps(3);
-    assert_eq!(h.state().settings.mode, Mode::Beginner);
 }
 
 #[test]
@@ -1185,6 +1208,9 @@ fn workbench_lists_fall_back_gracefully() {
     let mut h = harness(|| {
         let mut a = demo::app(demo::engine(Mode::Experienced, true));
         demo::fill_workbench(&mut a);
+        a.state.inspect_tools_open = true;
+        a.state.inspect_details_open = true;
+        a.state.bottom_open = true;
         a
     });
     h.run_steps(4);
@@ -1220,6 +1246,7 @@ fn the_agent_console_status_stays_clear_of_its_tabs_when_narrow() {
     let mut h = harness_sized(egui::vec2(1000.0, 500.0), || {
         let mut a = demo::app(demo::engine(Mode::Experienced, true));
         demo::fill_workbench(&mut a);
+        a.state.bottom_open = true;
         a
     });
     h.run_steps(4);
@@ -1239,6 +1266,7 @@ fn the_agent_console_keeps_its_size() {
     let mut h = harness_sized(egui::vec2(1890.0, 1025.0), || {
         let mut a = demo::app(demo::engine(Mode::Experienced, true));
         demo::fill_workbench(&mut a);
+        a.state.bottom_open = true;
         a
     });
     h.run_steps(4);
@@ -1256,6 +1284,7 @@ fn the_agent_console_prompt_box_starts_tall_and_grows_inside_the_window() {
     let mut h = harness_sized(egui::vec2(1920.0, 1030.0), || {
         let mut a = demo::app(demo::engine(Mode::Experienced, true));
         demo::fill_workbench(&mut a);
+        a.state.bottom_open = true;
         a
     });
     h.run_steps(4);
@@ -1288,6 +1317,7 @@ fn the_agent_console_leaves_room_for_the_code_in_a_small_window() {
     let mut h = harness_sized(egui::vec2(1000.0, 500.0), || {
         let mut a = demo::app(demo::engine(Mode::Experienced, true));
         demo::fill_workbench(&mut a);
+        a.state.bottom_open = true;
         a
     });
     h.run_steps(4);
@@ -1304,6 +1334,7 @@ fn the_agent_console_can_be_resized() {
     let mut h = harness_sized(egui::vec2(1920.0, 1030.0), || {
         let mut a = demo::app(demo::engine(Mode::Experienced, true));
         demo::fill_workbench(&mut a);
+        a.state.bottom_open = true;
         a
     });
     h.run_steps(4);
@@ -1401,24 +1432,22 @@ fn title_bar_keeps_its_size_when_zoomed() {
         let mut h = harness_sized(egui::vec2(1360.0, 600.0), || demo::app(demo::engine(Mode::Experienced, true)));
         h.ctx.set_zoom_factor(zoom);
         h.run_steps(4);
-        // The topmost node with the label: Settings and Advanced appear in the bar first.
+        // The topmost Settings control is in the title bar.
         let rect = |label: &str| {
             let r = h.get_all_by_label(label).map(|n| n.rect()).min_by(|a, b| a.top().total_cmp(&b.top())).unwrap();
             egui::Rect::from_min_max(r.min * zoom, r.max * zoom)
         };
-        (rect("Settings"), rect("Advanced"), rect("Filter"))
+        (rect("Settings"), rect("New project"))
     };
-    let (settings, advanced, filter) = on_screen(1.0);
+    let (settings, project) = on_screen(1.0);
     // The bar is the system title bar's height, and its controls sit centred in it.
     assert!((settings.center().y - 16.0).abs() <= 1.0, "settings button at {settings:?}");
     for zoom in [0.5, 1.5] {
-        let (s, a, f) = on_screen(zoom);
-        for (name, at_100, now) in [("Settings", settings, s), ("Advanced", advanced, a)] {
-            let moved = (now.min - at_100.min).length().max((now.max - at_100.max).length());
-            assert!(moved <= 1.0, "{name} moved {moved} pt at {zoom}x: {at_100:?} → {now:?}");
-        }
-        let grew = f.height() / filter.height();
-        assert!((grew - zoom).abs() < 0.15, "the body should zoom: Filter grew {grew}x at {zoom}x");
+        let (s, p) = on_screen(zoom);
+        let moved = (s.min - settings.min).length().max((s.max - settings.max).length());
+        assert!(moved <= 1.0, "Settings moved {moved} pt at {zoom}x: {settings:?} → {s:?}");
+        let grew = p.height() / project.height();
+        assert!((grew - zoom).abs() < 0.15, "the body should zoom: New project grew {grew}x at {zoom}x");
     }
 }
 
@@ -2627,22 +2656,32 @@ fn opening_another_target_starts_a_new_conversation() {
 }
 
 #[test]
-fn advanced_mode_keeps_projects_and_their_questions_in_sight() {
-    let mut h = harness(|| {
-        let mut a = demo::app(demo::engine(Mode::Experienced, true));
-        demo::fill_project(&mut a);
-        a
-    });
-    h.run_steps(3);
-    // The project's approval card is on screen in Advanced mode too, with the sidebar beside it.
-    h.get_by_label("Allow once");
-    h.get_by_label("Workbench").click();
-    h.run_steps(3);
-    assert_eq!(h.state().state.screen, Screen::Workbench);
-    h.get_by_label("Projects and builds").click();
-    h.run_steps(3);
-    assert_eq!(h.state().state.screen, Screen::Project, "back to the open project");
-    h.get_by_label("Allow once");
+fn legacy_preferences_share_navigation_and_keep_project_drafts() {
+    for mode in [Mode::Beginner, Mode::Experienced] {
+        let mut h = harness(move || {
+            let mut a = demo::app(demo::engine(mode, true));
+            demo::fill_project(&mut a);
+            a.state.project_input = "Keep this draft".into();
+            a
+        });
+        h.run_steps(3);
+        h.get_by_label("Allow once");
+        h.get_by_label("Inspect").click();
+        h.run_steps(3);
+        h.get_by_label("New project");
+        h.get_by_label("Pseudo-C");
+        h.get_by_label("Hex");
+        h.get_by_label("Graph");
+        h.get_by_label("Source");
+        h.get_by_label("Network");
+        h.get_by_label("Details and evidence").click();
+        h.run_steps(3);
+        h.get_by_label("Evidence");
+        h.get_by_label("Project chat").click();
+        h.run_steps(3);
+        h.get_by_label("Allow once");
+        assert_eq!(h.state().state.project_input, "Keep this draft");
+    }
 }
 
 #[test]
@@ -2721,7 +2760,7 @@ fn a_narrow_window_folds_the_sidebar_and_puts_the_project_details_above_the_feed
     // Folded to icons: the names are still there for screen readers and on hover.
     let new = h.get_by_label("New project").rect();
     assert!(new.width() <= 60.0, "the sidebar is folded: {new:?}");
-    h.get_by_label("Project details");
+    h.get_by_label("Result and project details");
     assert!(h.query_by_label("Open folder").is_none(), "folded away until opened");
     let send = h.get_by_label("Send (Enter)").rect();
     assert!(send.max.x <= 760.0 && send.max.y <= 820.0, "the prompt box fits: {send:?}");
@@ -2768,7 +2807,7 @@ fn a_long_line_in_the_builders_words_stays_in_the_window() {
     assert!(r.min.x >= 0.0 && r.max.x <= 1280.0, "the builder's line leaves the window: {r:?}");
 }
 
-/// #666: in Experienced mode, the tool-work rows (their status notes) wrap inside the window too.
+/// #666: expanded tool-work status notes wrap inside the window.
 #[test]
 fn a_long_status_note_in_the_work_rows_stays_in_the_window() {
     use craft_anything_ui_egui::state::FeedItem;
@@ -2780,6 +2819,8 @@ fn a_long_status_note_in_the_work_rows_stays_in_the_window() {
         a.state.feed.push(FeedItem::Work { tools: Vec::new(), notes: vec![format!("header {note}")] });
         a
     });
+    h.run_steps(3);
+    h.get_by_label("Worked through 1 steps").click();
     h.run_steps(3);
     let r = h.get_by_label_contains("first local_10b0").rect();
     eprintln!("RECT {r:?}");

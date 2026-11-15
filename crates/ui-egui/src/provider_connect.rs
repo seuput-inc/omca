@@ -167,13 +167,6 @@ fn composer_control(app: &mut CraftApp, ui: &mut Ui, accessible_name: &str) {
         app.state.backend.as_ref().and_then(|name| app.backends.iter().find(|b| &b.name == name && b.kind == craft_anything_ai::BackendKind::Managed));
     let label = current
         .map(|b| {
-            let provider = app
-                .backend_options
-                .get(&b.name)
-                .and_then(|o| o.provider_id.as_ref())
-                .and_then(|id| state.snapshot.as_ref().and_then(|s| s.providers.iter().find(|p| &p.id == id)))
-                .map(|p| p.name.as_str())
-                .unwrap_or(&b.name);
             let model = state
                 .snapshot
                 .as_ref()
@@ -184,9 +177,9 @@ fn composer_control(app: &mut CraftApp, ui: &mut Ui, accessible_name: &str) {
                 })
                 .map(|m| m.name.as_str())
                 .unwrap_or(&b.model);
-            format!("{provider} · {model}")
+            model.to_owned()
         })
-        .unwrap_or_else(|| app.state.backend.as_ref().map(|name| format!("{} · {}", name, tr("Unavailable"))).unwrap_or_else(|| tr("Choose model")));
+        .unwrap_or_else(|| tr("Choose model"));
     let label = if current.is_some() && !ready {
         let status = if state.picker.pending.is_some() {
             tr("Connecting…")
@@ -241,7 +234,18 @@ fn composer_control(app: &mut CraftApp, ui: &mut Ui, accessible_name: &str) {
                 if let Some(snapshot) = &state.snapshot {
                     let query = state.picker.query.to_lowercase();
                     let mut any = false;
-                    let mut providers: Vec<_> = snapshot.providers.iter().filter(|p| p.authenticated && !p.accounts.is_empty()).collect();
+                    let mut providers: Vec<_> = snapshot
+                        .providers
+                        .iter()
+                        .filter(|p| {
+                            p.authenticated
+                                && p.disabled_reason.is_none()
+                                && p.accounts
+                                    .iter()
+                                    .find(|a| a.selected)
+                                    .map_or_else(|| p.accounts.iter().any(|a| a.state == "available"), |a| a.state == "available")
+                        })
+                        .collect();
                     providers.sort_by_key(|p| p.name.to_lowercase());
                     let has_accounts = !providers.is_empty();
                     let count = snapshot
@@ -286,9 +290,6 @@ fn composer_control(app: &mut CraftApp, ui: &mut Ui, accessible_name: &str) {
                                     })
                                     .collect();
                                 models.sort_by_key(|m| m.name.to_lowercase());
-                                if !models.is_empty() {
-                                    ui.strong(&provider.name);
-                                }
                                 for model in models {
                                     any = true;
                                     let checked = current.is_some_and(|b| {
@@ -366,6 +367,7 @@ fn composer_control(app: &mut CraftApp, ui: &mut Ui, accessible_name: &str) {
 pub(crate) fn poll(app: &mut CraftApp) {
     let state = &mut app.provider_accounts;
     let mut finished = false;
+    let mut refresh_assets = false;
     let mut task = state.task.take();
     if let Some(task) = &mut task {
         while let Some(event) = task.try_event() {
@@ -378,6 +380,7 @@ pub(crate) fn poll(app: &mut CraftApp) {
                     state.progress = None;
                     match result {
                         Ok(snapshot) => {
+                            refresh_assets = true;
                             state.loaded_models.clear();
                             state.snapshot = Some(snapshot);
                             if state.key_pending {
@@ -410,6 +413,9 @@ pub(crate) fn poll(app: &mut CraftApp) {
         }
     }
     state.task = if finished { None } else { task };
+    if refresh_assets {
+        app.check_asset_keys();
+    }
 }
 
 fn response(state: &mut AccountsState, request_id: String, value: Option<String>, accepted: Option<bool>, cancelled: bool) {
@@ -760,6 +766,25 @@ pub(crate) fn show(app: &mut CraftApp, ui: &mut Ui) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn composer_shows_model_names_without_account_or_provider_labels() {
+        use egui_kittest::{Harness, kittest::Queryable};
+        let mut app = crate::demo::app(crate::demo::engine(craft_anything_engine::Mode::Beginner, true));
+        crate::demo::composer_scene(&mut app, false);
+        let mut h = Harness::builder().with_size(egui::vec2(760.0, 520.0)).build_ui_state(
+            |ui, app| {
+                theme::install_fonts(ui.ctx());
+                composer(app, ui);
+            },
+            app,
+        );
+        h.get_by_label("Change model · Example model").click();
+        h.run_steps(3);
+        assert!(h.query_by_label("Example model").is_some());
+        assert!(h.query_by_label("Example account").is_none());
+        assert!(h.query_by_label("Example AI").is_none());
+    }
 
     #[test]
     fn model_failure_keeps_selection_and_only_offers_retry_for_retryable_errors() {

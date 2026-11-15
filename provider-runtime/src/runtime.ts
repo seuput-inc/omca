@@ -8,6 +8,7 @@ import { accountUsage } from './usage';
 import { Observations } from './observations';
 import { canActOnAccount, modelList, supportsApiKey } from './catalog';
 import { assertDirectTransport, DirectAuthError, directCredentialResolver, supportsDirectLogin } from './direct-auth';
+import { generateManagedImage, imageCapabilities } from './images';
 
 const dir = process.env.OMCA_PROVIDER_DATA_DIR;
 if (!dir || !isAbsolute(dir)) process.exit(1);
@@ -95,9 +96,11 @@ async function execute(req: Record<string, unknown>) {
   const command = req.command;
   const id = typeof req.provider_id === 'string' ? req.provider_id : '';
   if (command === 'snapshot') return snapshot(req.refresh === true);
+  if (command === 'image_capabilities') return imageCapabilities(storage, await selections());
   if (typeof command !== 'string' || !id) throw new Error('Invalid request');
   checkProvider(id);
   const provider = getOAuthCredentialProvider(id);
+  if (command === 'generate_image') return generateManagedImage(storage, await selections(), id, req.prompt, req.shape, abort.signal);
   if (command === 'models') return modelList(id);
   if (command === 'login') {
     const warning = loginRiskWarning(id);

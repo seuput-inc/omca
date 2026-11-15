@@ -41,7 +41,7 @@ fn render(out: &std::path::Path, name: &str, w: f32, h: f32, scale: f32, make: i
         harness.step();
     }
     match name {
-        "composer-picker" | "composer-empty-picker" => {
+        "composer-picker" | "composer-empty-picker" | "unified-model-picker" => {
             harness.get_by_label_contains(&craft_anything_ui_egui::i18n::tr("Change model")).click();
             harness.run_steps(3);
         }
@@ -91,6 +91,46 @@ fn main() {
     let want = |n: &str| only.as_deref().is_none_or(|o| n.contains(o));
     let w = arg(&args, "--width").and_then(|s| s.parse().ok()).unwrap_or(1440.0);
     let h = arg(&args, "--height").and_then(|s| s.parse().ok()).unwrap_or(900.0);
+
+    if want("unified-home") {
+        render(&out, "unified-home", w, h, scale, || {
+            let mut a = demo::app(demo::engine(Mode::Beginner, true));
+            demo::fill_projects(&mut a);
+            a
+        });
+    }
+    if want("unified-project") {
+        render(&out, "unified-project", w, h, scale, || {
+            let mut a = demo::app(demo::engine(Mode::Beginner, true));
+            demo::fill_project(&mut a);
+            a
+        });
+    }
+    if want("unified-inspect") {
+        render(&out, "unified-inspect", w, h, scale, || {
+            let mut a = demo::app(demo::engine(Mode::Beginner, true));
+            demo::fill_workbench(&mut a);
+            a
+        });
+    }
+    if want("unified-native-images") {
+        render(&out, "unified-native-images", w, h, scale, || {
+            let mut a = demo::app(demo::engine(Mode::Beginner, true));
+            demo::composer_scene(&mut a, false);
+            a.state.screen = Screen::Home;
+            a.state.make.request = "Create a bakery site with original illustrations.".into();
+            a.state.make.generate_assets = true;
+            a.asset_keys = Some([("managed-images".to_string(), true), ("fal".to_string(), false)].into());
+            a
+        });
+    }
+    if want("unified-model-picker") {
+        render(&out, "unified-model-picker", w, h, scale, || {
+            let mut a = demo::app(demo::engine(Mode::Beginner, true));
+            demo::composer_scene(&mut a, false);
+            a
+        });
+    }
 
     if want("first-run-welcome") {
         render(&out, "first-run-welcome", w, h, scale, || demo::app(demo::engine(Mode::Beginner, false)));
@@ -579,7 +619,7 @@ fn render_kit(out: &std::path::Path, name: &str, w: f32, h: f32, scale: f32, kin
         move |ui, ready: &mut bool| {
             if !*ready {
                 CraftApp::setup_context(ui.ctx());
-                theme::apply(ui.ctx(), kind, false);
+                theme::apply(ui.ctx(), kind);
                 craft_anything_ui_egui::i18n::set_language(LANG.get().map_or("en", String::as_str));
                 *ready = true;
                 // The fonts are bound from the next frame on.

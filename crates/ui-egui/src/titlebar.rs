@@ -1,5 +1,5 @@
-//! The custom title bar: app mark, what's open, Clean room / Deep, AI backend, Simple · Advanced,
-//! settings and the window buttons. Empty parts drag the window. On Windows and Linux the native
+//! The custom title bar: app mark, what's open, Clean room / Deep, settings and the window
+//! buttons. Empty parts drag the window. On Windows and Linux the native
 //! frame is off, so we draw the window buttons and the window edges resize it; macOS keeps its own
 //! frame and buttons, drawn over the bar's left end.
 
@@ -7,7 +7,6 @@ use crate::i18n::tr;
 use crate::state::Screen;
 use crate::theme::{self, Tokens, size, space};
 use crate::{CraftApp, icons, widgets};
-use craft_anything_engine::Mode;
 use egui::viewport::ResizeDirection;
 use egui::{RichText, Ui, Vec2};
 
@@ -231,23 +230,10 @@ pub fn show(app: &mut CraftApp, ui: &mut Ui) {
             if !app.settings.first_run_done {
                 return;
             }
-            if !app.beginner() {
-                if icons::button_scaled(ui, "settings", CONTROL, s, app.state.settings_open, "Settings").clicked() {
-                    app.state.settings_open = !app.state.settings_open;
-                }
-                rule(ui);
-            }
-            let sel = usize::from(app.mode() == Mode::Experienced);
-            if let Some(i) = widgets::segmented_scaled(ui, &["Simple", "Advanced"], sel, CONTROL - 2.0, theme::SMALL, s) {
-                app.set_mode(if i == 0 { Mode::Beginner } else { Mode::Experienced });
+            if icons::button_scaled(ui, "settings", CONTROL, s, app.state.settings_open, "Settings").clicked() {
+                app.state.settings_open = !app.state.settings_open;
             }
             rule(ui);
-            // Simple keeps Settings in the sidebar, but mode switching is always in reach.
-            if app.beginner() {
-                deep_toggle(app, ui);
-                usage_pill(app, ui);
-                return;
-            }
             deep_toggle(app, ui);
             usage_pill(app, ui);
             if app.jobs.busy() {
@@ -430,9 +416,11 @@ mod tests {
     }
 
     #[test]
-    fn both_modes_offer_immediate_switching_without_window_gestures() {
-        for initial in [Mode::Beginner, Mode::Experienced] {
-            let app = crate::demo::app(crate::demo::engine(initial, true));
+    fn settings_and_context_are_available_for_legacy_mode_preferences() {
+        for initial in [craft_anything_engine::Mode::Beginner, craft_anything_engine::Mode::Experienced] {
+            let mut app = crate::demo::app(crate::demo::engine(initial, true));
+            app.state.screen = Screen::Workbench;
+            app.view.project = Some("Sample project".into());
             let mut h = Harness::builder().with_size(Vec2::new(1280.0, 80.0)).build_ui_state(
                 |ui, (app, ready)| {
                     if !*ready {
@@ -445,19 +433,13 @@ mod tests {
                 (app, false),
             );
             h.run_steps(3);
-            assert!(h.query_by_label(&tr("Simple")).is_some());
-            assert!(h.query_by_label(&tr("Advanced")).is_some());
-            assert_eq!(h.query_by_label(&tr("Settings")).is_some(), initial == Mode::Experienced, "Simple keeps Settings in the sidebar");
-            let (target, name) = if initial == Mode::Beginner { (Mode::Experienced, "Advanced") } else { (Mode::Beginner, "Simple") };
-            let pos = h.get_by_label(&tr(name)).rect().center();
+            assert!(h.query_by_label("Sample project").is_some());
+            assert!(h.query_by_label(&tr("Clean room")).is_some());
+            let pos = h.get_by_label(&tr("Settings")).rect().center();
             no_window_gesture(&pointer(&mut h, pos, egui::PointerButton::Primary, true));
             no_window_gesture(&pointer(&mut h, pos, egui::PointerButton::Primary, false));
-            assert_eq!(h.state().0.mode(), target);
-            h.run_steps(2);
-            let pos = h.get_by_label(&tr(name)).rect().center();
-            no_window_gesture(&pointer(&mut h, pos, egui::PointerButton::Primary, true));
-            no_window_gesture(&pointer(&mut h, pos, egui::PointerButton::Primary, false));
-            assert_eq!(h.state().0.mode(), target);
+            assert!(h.state().0.state.settings_open);
+            assert_eq!(h.state().0.settings.mode, initial);
         }
     }
 }

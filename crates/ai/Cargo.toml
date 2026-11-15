@@ -24,6 +24,8 @@ toml = { workspace = true }
 ureq = "3"
 dirs = "6"
 sys-locale = "0.3.2"
+base64 = "0.22"
+image = { version = "0.25", default-features = false, features = ["png", "webp", "jpeg"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 keyring = { version = "3", default-features = false, features = ["async-secret-service", "async-io", "crypto-rust"] }

@@ -70,7 +70,11 @@ fn kind_of(request: &str, target: &TargetRef, stack: &str) -> &'static str {
     KindRegistry::built_in().detect(request, target, stack).unwrap().id()
 }
 fn brief(ws: &Workspace, k: &str, deep: bool, ghidra: bool, editor: Option<&Path>, assets: bool, extra: Option<&str>) -> String {
-    super::brief(kind(k).as_ref(), &BriefCx { ws, deep, ghidra, editor, assets, image_model: None, sees_pictures: true }, extra)
+    super::brief(
+        kind(k).as_ref(),
+        &BriefCx { ws, deep, ghidra, editor, assets, assets_3d: assets, image_pricing: kinds::ImagePricing::Catalogue, image_model: None, sees_pictures: true },
+        extra,
+    )
 }
 fn refine(k: &str, check: &CheckResult) -> String {
     kind(k).refine(check, true)
@@ -684,7 +688,21 @@ fn said_to_look(text: &str) -> Option<&'static str> {
 #[test]
 fn a_builder_that_cant_see_is_never_sent_to_a_picture() {
     let sees_only = |ws: &Workspace, k: &str, deep: bool, assets: bool, sees_pictures: bool| {
-        super::brief(kind(k).as_ref(), &BriefCx { ws, deep, ghidra: false, editor: None, assets, image_model: None, sees_pictures }, None)
+        super::brief(
+            kind(k).as_ref(),
+            &BriefCx {
+                ws,
+                deep,
+                ghidra: false,
+                editor: None,
+                assets,
+                assets_3d: assets,
+                image_pricing: kinds::ImagePricing::Catalogue,
+                image_model: None,
+                sees_pictures,
+            },
+            None,
+        )
     };
     let mut checked = 0;
     // Everything a sighted builder is sent, to show the guard's phrases are still what it's told.
@@ -1365,8 +1383,21 @@ fn a_registered_kind_is_chosen_from_its_words_and_brings_its_checks() {
     let ws = Workspace::create(d.path(), "Deck", "Make slides", TargetRef::None).unwrap();
     let checks = kinds.get("slides").unwrap().checks(&ws);
     assert_eq!(checks.iter().map(|c| c.id()).collect::<Vec<_>>(), ["outline"]);
-    let b =
-        super::brief(&SlidesKind, &BriefCx { ws: &ws, deep: false, ghidra: false, editor: None, assets: false, image_model: None, sees_pictures: true }, None);
+    let b = super::brief(
+        &SlidesKind,
+        &BriefCx {
+            ws: &ws,
+            deep: false,
+            ghidra: false,
+            editor: None,
+            assets: false,
+            assets_3d: false,
+            image_pricing: kinds::ImagePricing::Catalogue,
+            image_model: None,
+            sees_pictures: true,
+        },
+        None,
+    );
     assert!(b.contains("What to build: a slide deck."), "{b}");
 }
 
@@ -1561,7 +1592,17 @@ fn other_pages_of_the_same_site_are_picked_from_its_links() {
     // The brief mentions the other pages only when some were captured.
     let d = tempfile::tempdir().unwrap();
     let ws = Workspace::create(d.path(), "Shop", "Clone it", TargetRef::Website { url: "https://shop.example.com/".into() }).unwrap();
-    let cx = |ws| BriefCx { ws, deep: false, ghidra: false, editor: None, assets: false, image_model: None, sees_pictures: true };
+    let cx = |ws| BriefCx {
+        ws,
+        deep: false,
+        ghidra: false,
+        editor: None,
+        assets: false,
+        assets_3d: false,
+        image_pricing: kinds::ImagePricing::Catalogue,
+        image_model: None,
+        sees_pictures: true,
+    };
     // #1590: and it always says how to run the site without Craft Anything.
     assert_eq!(kinds::WebsiteKind.brief_sections(&cx(&ws)), [kinds::website::HOW_TO_RUN]);
     std::fs::create_dir_all(ws.capture_dir()).unwrap();
@@ -3389,7 +3430,17 @@ fn a_resumed_game_builder_hears_the_asset_choice_as_it_is_now() {
     let mut ws = Workspace::create(d.path(), "Game", "A snake game", TargetRef::None).unwrap();
     let game = kind("game");
     fn cx(ws: &Workspace, assets: bool) -> BriefCx<'_> {
-        BriefCx { ws, deep: false, ghidra: false, editor: None, assets, image_model: None, sees_pictures: true }
+        BriefCx {
+            ws,
+            deep: false,
+            ghidra: false,
+            editor: None,
+            assets,
+            assets_3d: assets,
+            image_pricing: kinds::ImagePricing::Catalogue,
+            image_model: None,
+            sees_pictures: true,
+        }
     }
     assert!(game.follow_up_sections(&cx(&ws, true)).is_empty(), "off and never used: nothing to say");
     // Turned on after the first build, with a key: the follow-up carries the asset note and budget.
@@ -3398,11 +3449,40 @@ fn a_resumed_game_builder_hears_the_asset_choice_as_it_is_now() {
     assert!(on[0].contains("assets_model_generate") && on[0].contains("$5.00"), "{on:?}");
     assert!(game.follow_up_sections(&cx(&ws, false)).is_empty(), "no key: not offered");
     // Turned off after some were made: say so.
-    let rec = craft_anything_engine::workspace::AssetRecord { file: "a.glb".into(), kind: "model".into(), prompt: "a crate".into(), cost_usd: 0.5, at_ms: 1 };
+    let rec = craft_anything_engine::workspace::AssetRecord {
+        file: "a.glb".into(),
+        kind: "model".into(),
+        prompt: "a crate".into(),
+        cost_usd: 0.5,
+        cost_unknown: false,
+        at_ms: 1,
+    };
     ws.record_asset(rec).unwrap();
     ws.set_person(|m| m.generate_assets = false).unwrap();
     assert!(game.follow_up_sections(&cx(&ws, true))[0].contains("now off"));
     assert!(kind("website").follow_up_sections(&cx(&ws, true)).is_empty());
+}
+
+#[test]
+fn managed_images_do_not_advertise_unconfigured_3d_or_a_free_price() {
+    let d = tempfile::tempdir().unwrap();
+    let mut ws = Workspace::create(d.path(), "Game", "A snake game", TargetRef::None).unwrap();
+    ws.set_person(|m| m.generate_assets = true).unwrap();
+    let cx = BriefCx {
+        ws: &ws,
+        deep: false,
+        ghidra: false,
+        editor: None,
+        assets: true,
+        assets_3d: false,
+        image_pricing: kinds::ImagePricing::Unknown,
+        image_model: None,
+        sees_pictures: true,
+    };
+    let note = kind("game").follow_up_sections(&cx).join(" ");
+    assert!(note.contains("assets_image_generate"));
+    assert!(note.contains("unknown"));
+    assert!(!note.contains("assets_model_generate"));
 }
 
 #[test]

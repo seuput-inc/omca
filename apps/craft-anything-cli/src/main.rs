@@ -275,9 +275,12 @@ fn run(cli: Cli) -> u8 {
                 // A builder can generate game assets with the person's keys (one per asset
                 // provider), read here from the keychain so none appears on a command line or in
                 // a log.
-                let providers = engine.session().ext.get::<craft_anything_engines::assets::AssetProviders>().map(|p| p.as_ref().clone()).unwrap_or_default();
+                let client = craft_anything_ai::AiHub::new(engine.clone()).provider_client();
+                let mut session = engine.session();
+                craft_anything_ai::install_managed_image_providers(&mut session, client, None, interrupt_token());
+                let providers = session.ext.get::<craft_anything_engines::assets::AssetProviders>().map(|p| p.as_ref().clone()).unwrap_or_default();
                 let keys = craft_anything_ai::keys::asset_keys(&craft_anything_ai::KeyStore::system(), &providers);
-                engine.session().ext.insert(Arc::new(keys));
+                session.ext.insert(Arc::new(keys));
             }
             let mut opts = craft_anything_mcp::ServerOptions::from_env();
             // Share target metadata without reading original files in Clean room.

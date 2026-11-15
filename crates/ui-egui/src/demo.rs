@@ -262,10 +262,10 @@ pub fn fill_ask(app: &mut CraftApp) {
     });
 }
 
-/// The workbench with a populated rail and the built-in hex view.
+/// The inspection view with a populated rail and the built-in hex view.
 pub fn fill_workbench(app: &mut CraftApp) {
     deep(app);
-    app.settings.mode = Mode::Experienced;
+    app.state.screen = Screen::Workbench;
     if let Some(e) = functions_evidence() {
         let sel = crate::workbench::rows(&e.result).get(6).cloned();
         app.state.selection = sel;

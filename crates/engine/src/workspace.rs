@@ -560,6 +560,8 @@ pub struct AssetRecord {
     /// What it was made from (the description, or the picture it was made from).
     pub prompt: String,
     pub cost_usd: f64,
+    #[serde(default)]
+    pub cost_unknown: bool,
     pub at_ms: u64,
 }
 

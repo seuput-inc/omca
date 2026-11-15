@@ -1,11 +1,10 @@
-//! Settings: General (mode, theme, language), Engines (Ghidra, tool paths), AI, Builds (when a
+//! Settings: General (projects, theme, language), Engines (Ghidra, tool paths), AI, Builds (when a
 //! build is good enough, generated art), Plugins (MCP servers), Safety.
 
 use crate::i18n::{LANGUAGES, tr, trf};
 use crate::state::SettingsTab;
 use crate::theme::{self, ThemeKind, Tokens, size, space};
 use crate::{CraftApp, Pick, icons, widgets};
-use craft_anything_engine::Mode;
 use egui::{RichText, Ui, Vec2};
 use std::path::PathBuf;
 
@@ -165,12 +164,8 @@ fn row(ui: &mut Ui, title: &str, sub: &str, add: impl FnOnce(&mut Ui)) {
 }
 
 fn general(app: &mut CraftApp, ui: &mut Ui) {
-    row(ui, "Mode", "Simple: say what you want and it's handled for you. Advanced: every tool, the evidence and the logs.", |ui| {
-        let sel = usize::from(app.settings.mode == Mode::Experienced);
-        if let Some(i) = widgets::segmented(ui, &["Simple", "Advanced"], sel, 30.0) {
-            app.set_mode(if i == 0 { Mode::Beginner } else { Mode::Experienced });
-        }
-    });
+    widgets::caption(ui, "Projects");
+    ui.add_space(space::S);
     let dir = app.settings.projects_dir();
     row(ui, "New projects go in", &dir.display().to_string(), |ui| {
         if widgets::secondary(ui, Some("folder-open"), "Change…").clicked() {
@@ -207,6 +202,9 @@ fn general(app: &mut CraftApp, ui: &mut Ui) {
             }
         });
     });
+    ui.add_space(space::M);
+    widgets::caption(ui, "Appearance");
+    ui.add_space(space::S);
     row(ui, "Theme", "", |ui| {
         let sel = usize::from(app.theme_kind() == ThemeKind::StudioLight);
         if let Some(i) = widgets::segmented(ui, &["Studio", "Studio Light"], sel, 30.0) {
@@ -218,6 +216,9 @@ fn general(app: &mut CraftApp, ui: &mut Ui) {
     if LANGUAGES.len() > 1 {
         language(app, ui);
     }
+    ui.add_space(space::M);
+    widgets::caption(ui, "Welcome");
+    ui.add_space(space::S);
     row(ui, "Show the welcome again", "Runs the first-run steps next time.", |ui| {
         if widgets::secondary(ui, Some("refresh-cw"), "Reset").clicked() {
             app.settings.first_run_done = false;
@@ -416,8 +417,18 @@ fn builds(app: &mut CraftApp, ui: &mut Ui) {
     );
     let table = craft_anything_engines::assets::Catalogue::built_in();
     row(ui, "Picture model", "What pictures and textures are made with.", |ui| {
-        let current = table.image_model(a.image_model.as_deref()).or_else(|_| table.image_model(None)).map(|m| m.name.clone()).unwrap_or_default();
-        egui::ComboBox::from_id_salt("image-model").icon(widgets::combo_icon).selected_text(current).show_ui(ui, |ui| {
+        let automatic = a.image_model.as_deref().is_none_or(|id| id.trim().is_empty());
+        let current = if automatic {
+            tr("Automatic · connected GPT first")
+        } else {
+            table.image_model(a.image_model.as_deref()).map(|m| m.name.clone()).unwrap_or_else(|_| a.image_model.clone().unwrap_or_default())
+        };
+        let response = egui::ComboBox::from_id_salt("image-model").icon(widgets::combo_icon).selected_text(current).show_ui(ui, |ui| {
+            if ui.selectable_label(automatic, tr("Automatic · connected GPT first")).clicked() && !automatic {
+                a.image_model = None;
+                changed = true;
+            }
+            ui.separator();
             for m in table.images() {
                 let price = crate::usage::asset_cost_words(m.cost(craft_anything_engines::assets::Shape::Square));
                 let label = format!("{} · {} {}", m.name, price, tr("a picture"));
@@ -428,6 +439,7 @@ fn builds(app: &mut CraftApp, ui: &mut Ui) {
                 }
             }
         });
+        widgets::named(response.response, &tr("Picture model"));
     });
     if changed {
         app.settings_changed();
@@ -617,6 +629,29 @@ pub(crate) fn not_loaded_warning(settings: &craft_anything_engine::Settings) -> 
 mod tests {
     use super::*;
     use crate::{Done, demo, jobs::Finished};
+
+    #[test]
+    fn picture_model_can_return_from_explicit_fal_to_automatic_gpt() {
+        use egui_kittest::{Harness, kittest::Queryable};
+        let model = craft_anything_engines::assets::Catalogue::built_in().image_model(None).unwrap();
+        let mut app = demo::app(demo::engine(craft_anything_engine::Mode::Beginner, true));
+        app.settings.assets.image_model = Some(model.id.clone());
+        app.state.settings_open = true;
+        app.state.settings_tab = SettingsTab::Builds;
+        let mut h = Harness::builder().with_size(egui::vec2(900.0, 1800.0)).build_eframe(move |cc| {
+            CraftApp::setup_context(&cc.egui_ctx);
+            app
+        });
+        h.get_by_role_and_label(egui::accesskit::Role::ComboBox, &tr("Picture model")).scroll_to_me();
+        h.run_steps(2);
+        h.get_by_role_and_label(egui::accesskit::Role::ComboBox, &tr("Picture model")).focus();
+        h.run_steps(2);
+        h.key_press(egui::Key::Space);
+        h.run_steps(2);
+        h.get_by_label(&tr("Automatic · connected GPT first")).click();
+        h.run_steps(2);
+        assert_eq!(h.state().settings.assets.image_model, None);
+    }
 
     /// Settings that couldn't be loaded say so where the person is looking, with the file's name.
     #[test]

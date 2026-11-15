@@ -5,7 +5,6 @@ use crate::CraftApp;
 use crate::i18n::{self, tr};
 use crate::palette::{self, AppCommand};
 use crate::state::Screen;
-use craft_anything_engine::Mode;
 use muda::accelerator::{Accelerator, Code, Modifiers};
 use muda::{AboutMetadata, CheckMenuItem, Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem, Submenu};
 use std::sync::mpsc::{Receiver, channel};
@@ -18,7 +17,6 @@ enum Action {
     App(AppCommand),
     NewProject,
     Palette,
-    Mode(Mode),
     Deep(bool),
     Quit,
     Updates,
@@ -54,8 +52,6 @@ pub struct MenuBar {
     language: String,
     /// What only makes sense once first run is done (the palette's rule).
     gated: Vec<MenuItem>,
-    simple: CheckMenuItem,
-    advanced: CheckMenuItem,
     clean: CheckMenuItem,
     deep: CheckMenuItem,
     picked: Receiver<MenuId>,
@@ -95,8 +91,6 @@ impl MenuBar {
             labels.push((Label::Check(i.clone()), label));
             i
         };
-        let simple = check("Simple", Action::Mode(Mode::Beginner));
-        let advanced = check("Advanced", Action::Mode(Mode::Experienced));
         let clean = check("Clean room", Action::Deep(false));
         let deep = check("Deep", Action::Deep(true));
 
@@ -134,7 +128,7 @@ impl MenuBar {
         let built = app_menu
             .append_items(&[&about, &sep(), &settings, &sep(), &services, &sep(), &hide, &hide_others, &show_all, &sep(), &quit])
             .and_then(|()| file.append_items(&[&new_project, &open_file, &open_folder, &sep(), &export, &sep(), &close_window]))
-            .and_then(|()| view.append_items(&[&palette, &sep(), &simple, &advanced, &sep(), &clean, &deep, &sep(), &theme, &sep(), &fullscreen]))
+            .and_then(|()| view.append_items(&[&palette, &sep(), &clean, &deep, &sep(), &theme, &sep(), &fullscreen]))
             .and_then(|()| window.append_items(&[&minimise, &zoom, &sep(), &to_front]))
             .and_then(|()| help.append_items(&[&updates, &sep(), &website, &report]))
             .and_then(|()| menu.append_items(&[&app_menu, &file, &view, &window, &help]));
@@ -154,11 +148,11 @@ impl MenuBar {
             ctx.request_repaint();
         }));
         let gated = vec![settings, new_project, open_file, open_folder, export, palette, theme];
-        Some(Self { _menu: menu, actions, labels, language: i18n::language(), gated, simple, advanced, clean, deep, picked })
+        Some(Self { _menu: menu, actions, labels, language: i18n::language(), gated, clean, deep, picked })
     }
 }
 
-/// Runs what was picked since the last frame and shows the current mode and switches.
+/// Runs what was picked since the last frame and shows the current Clean room / Deep setting.
 pub fn update(app: &mut CraftApp, ctx: &egui::Context) {
     if let Some(bar) = app.menu_bar.as_mut() {
         let language = i18n::language();
@@ -178,8 +172,7 @@ pub fn update(app: &mut CraftApp, ctx: &egui::Context) {
         }
     }
     let deep = app.settings.deep_mode;
-    let beginner = app.beginner();
-    for (item, on) in [(&bar.simple, beginner), (&bar.advanced, !beginner), (&bar.clean, !deep), (&bar.deep, deep)] {
+    for (item, on) in [(&bar.clean, !deep), (&bar.deep, deep)] {
         if item.is_enabled() != ready {
             item.set_enabled(ready);
         }
@@ -196,7 +189,6 @@ pub fn update(app: &mut CraftApp, ctx: &egui::Context) {
             Action::App(c) => palette::run_app_command(app, c),
             Action::NewProject => app.state.screen = Screen::Home,
             Action::Palette => palette::toggle(app),
-            Action::Mode(m) => app.set_mode(m),
             Action::Deep(on) => app.set_deep(on),
         }
     }

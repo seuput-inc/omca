@@ -1728,3 +1728,24 @@ Set up a Unity account and licence	Unity 계정 및 라이선스 설정
 Unity is installed. Complete account and licence setup before building.	Unity가 설치되었습니다. 빌드 전에 계정 및 라이선스 설정을 완료하세요.
 Check the latest engine version	최신 엔진 버전 확인
 Check for a new version, then download, install, and restart here. Your accounts and projects are kept.	새 버전을 확인한 다음 앱 안에서 다운로드·설치·재시작하세요. 계정과 프로젝트는 유지됩니다.
+Pictures use your connected GPT account. Subscription credits or charges may apply; unknown costs require your approval. fal.ai is optional for pictures and is needed for 3D models.	이미지는 연결한 GPT 계정으로 생성합니다. 구독 크레딧이나 요금이 사용될 수 있으며, 비용을 알 수 없으면 승인을 요청합니다. fal.ai는 이미지에는 선택 사항이며 3D 모델 생성에 필요합니다.
+Connect a GPT account that supports image generation, or optionally add a fal.ai key. No generation is attempted without a supported connection.	이미지 생성을 지원하는 GPT 계정을 연결하거나 선택 사항인 fal.ai 키를 추가하세요. 지원되는 연결이 없으면 생성을 시도하지 않습니다.
+Optional fal.ai generation: {model} a 3D model, {picture} a picture. Off, no assets are generated.	선택 사항인 fal.ai 생성: 3D 모델당 {model}, 이미지당 {picture}. 끄면 에셋을 생성하지 않습니다.
+Optional fal.ai setup	선택 사항: fal.ai 연결
+Connected GPT image generation is used first when supported. fal.ai is optional for pictures and provides 3D generation. Unknown subscription-credit or monetary costs require explicit approval.	지원되는 경우 연결한 GPT의 이미지 생성을 우선 사용합니다. fal.ai는 이미지에 선택 사항이며 3D 생성을 제공합니다. 구독 크레딧이나 금액을 알 수 없으면 명시적인 승인을 요청합니다.
+Some generated assets use subscription credits or have an unknown cost. The dollar total excludes those costs.	일부 생성 에셋은 구독 크레딧을 사용하거나 비용을 알 수 없습니다. 달러 합계에는 해당 비용이 포함되지 않습니다.
+Use subscription credits or incur charges for this image?	이 이미지 생성에 구독 크레딧이나 요금을 사용하도록 허용할까요?
+The price is unavailable. Subscription credits may be consumed or monetary charges incurred, and these costs are not covered by the project's dollar budget. Allow once, or always for this project.	가격을 알 수 없습니다. 구독 크레딧이 사용되거나 요금이 발생할 수 있으며, 이 비용에는 프로젝트의 달러 예산이 적용되지 않습니다. 이번 한 번 또는 이 프로젝트에서 항상 허용할 수 있습니다.
+Appearance	화면 설정
+You can set up AI later in Settings.	나중에 설정에서 AI를 설정할 수 있습니다.
+Result and project details	결과 및 프로젝트 정보
+Inspect tools and evidence	도구 및 근거 살펴보기
+Loading the latest capture…	최신 캡처 불러오는 중…
+No capture is available for the latest check.	최근 검사에 캡처가 없습니다.
+Results and captures appear here when available.	결과와 캡처가 준비되면 여기에 표시됩니다.
+Project chat	프로젝트 대화
+Details and evidence	상세 정보 및 근거
+Automatic · connected GPT first	자동 · 연결된 GPT 우선
+Latest result capture	최신 결과 캡처
+Tools	도구
+Inspect	살펴보기

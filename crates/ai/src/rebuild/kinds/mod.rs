@@ -65,6 +65,13 @@ fn is_complement_case(w: &str) -> bool {
     ENDINGS.iter().any(|e| w.ends_with(e))
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum ImagePricing {
+    Catalogue,
+    Unknown,
+    Known(f64),
+}
+
 /// What the brief is written from.
 pub struct BriefCx<'a> {
     pub ws: &'a Workspace,
@@ -77,6 +84,8 @@ pub struct BriefCx<'a> {
     /// An asset provider's key is set up; assets are offered only if the project also allows them
     /// (`Manifest::generate_assets`).
     pub assets: bool,
+    pub assets_3d: bool,
+    pub image_pricing: ImagePricing,
     /// The picture model chosen in Settings (an asset-table id); `None` = the table's default.
     pub image_model: Option<&'a str>,
     /// The builder can look at pictures (an agent app opens them with its Read tool). One that
