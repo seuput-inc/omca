@@ -187,7 +187,14 @@ impl std::fmt::Debug for Restart {
 impl Restart {
     pub fn start(self) -> Result<(), String> {
         let helper = self.staging.path().join(helper_name());
-        Launch::new(&helper).arg(HELPER_FLAG).arg(self.staging.path()).cwd(self.staging.path()).hide_console().start().map_err(err)?;
+        Launch::new(&helper)
+            .arg(HELPER_FLAG)
+            .arg(self.staging.path())
+            .cwd(self.staging.path())
+            .log_to(self.staging.path().join("helper.log"))
+            .hide_console()
+            .start()
+            .map_err(err)?;
         // The child acquires the lease after this handle closes. Staging survives our exit.
         let Self { staging, lease } = self;
         let _ = staging.keep();

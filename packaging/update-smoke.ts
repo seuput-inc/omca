@@ -1,5 +1,5 @@
 // Real helper smoke. Uses only a caller-supplied scratch folder and synthetic credentials.
-import { mkdirSync, copyFileSync, writeFileSync, readFileSync, existsSync } from "node:fs";
+import { mkdirSync, copyFileSync, writeFileSync, readFileSync, existsSync, readdirSync } from "node:fs";
 import { join, resolve, basename } from "node:path";
 import { spawnSync } from "node:child_process";
 const [fixture, scratch, key] = process.argv.slice(2);
@@ -45,7 +45,18 @@ run(currentExe, ["--prepare", `${artifact}.manifest.json`, `${artifact}.sig`, ar
 const marker = join(root, "installed", "restarted-version.txt");
 const deadline = Date.now() + 120_000;
 while (!existsSync(marker) && Date.now() < deadline) await Bun.sleep(100);
-if (!existsSync(marker) || readFileSync(marker, "utf8").trim() !== next) throw new Error("New version did not restart from the original installation");
+if (!existsSync(marker) || readFileSync(marker, "utf8").trim() !== next) {
+  const cache = join(root, "cache");
+  if (existsSync(cache)) {
+    for (const entry of readdirSync(cache, { recursive: true, withFileTypes: true })) {
+      if (!entry.isFile() || !["helper.log", "portable-plan.json"].includes(entry.name)) continue;
+      const path = join(entry.parentPath, entry.name);
+      console.error(`${path}\n${readFileSync(path, "utf8").slice(-16_384)}`);
+    }
+  }
+  console.error(`Installed version: ${run(currentExe, ["--version"]).trim()}`);
+  throw new Error("New version did not restart from the original installation");
+}
 if (readFileSync(credentials, "utf8") !== "synthetic-credential-retained\n") throw new Error("Credentials changed during replacement");
 if (run(currentExe, ["--version"]).trim() !== `craft-anything ${next}`) throw new Error("Original installation did not retain the new version");
 console.log(`PASS: signed ${mac ? "macOS" : "Windows portable"} helper replaced ${version} with ${next}, restarted the same install, preserved synthetic credentials.`);

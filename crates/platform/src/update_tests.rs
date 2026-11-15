@@ -3,6 +3,17 @@ use super::*;
 use ed25519_dalek::{Signer, SigningKey};
 use std::io::Write;
 
+#[cfg(windows)]
+#[test]
+fn exited_owner_is_absent_not_an_update_failure() {
+    let current = process_identity(std::process::id()).unwrap().expect("running owner identity");
+    assert!(!current.is_empty());
+    let mut child = std::process::Command::new("cmd.exe").args(["/D", "/C", "exit", "0"]).spawn().unwrap();
+    let pid = child.id();
+    assert!(child.wait().unwrap().success());
+    assert_eq!(process_identity(pid).unwrap(), None);
+}
+
 fn manifest() -> Manifest {
     Manifest {
         schema: 1,
