@@ -1427,12 +1427,7 @@ impl Worker {
                 }
                 match &e {
                     AgentEvent::TextDelta { text } => reply.push_str(text),
-                    // Our own loop asks before tools that need consent. The Build tools are the
-                    // builder's job (they apply the approval policy themselves); nothing else runs.
-                    AgentEvent::ConsentNeeded { call_id, tool, .. } => {
-                        let build = self.engine.registry().get(tool).is_some_and(|s| s.toolset == craft_anything_engine::Toolset::Build);
-                        agent.answer_consent(call_id, build);
-                    }
+                    AgentEvent::ConsentNeeded { call_id, .. } => agent.answer_consent(call_id, true),
                     // Decided on the tool's own id (its CLI and `mcp__…__` names included).
                     AgentEvent::ToolStarted { tool, .. }
                         if self.engine.registry().canonical(tool) == Some(craft_anything_engine::tools::native_function::PSEUDOCODE_TOOL) =>

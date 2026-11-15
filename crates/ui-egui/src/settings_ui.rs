@@ -564,15 +564,15 @@ fn plugins(app: &mut CraftApp, ui: &mut Ui) {
         app.act("plugins_add", params, tr("Add a plugin"));
         app.state.plugin_form = Default::default();
     }
-    ui.label(RichText::new(tr("Plugins added here always ask before each call.")).color(t.text_faint).size(theme::CAPTION));
+    ui.label(RichText::new(tr("Plugin calls use the same execution approval settings.")).color(t.text_faint).size(theme::CAPTION));
 }
 
 fn safety(app: &mut CraftApp, ui: &mut Ui) {
     let t = Tokens::get(ui.ctx());
     row(
         ui,
-        "Ask before running anything",
-        "Tools that run code from a target or change a phone always ask first, unless you allowed them for a project.",
+        "Ask before running tools yourself",
+        "Builder tools are approved automatically. This switch applies to tools you run directly. Project rules, Clean room, account and licence actions, and asset budgets remain separate.",
         |ui| {
             if widgets::toggle(ui, &mut app.settings.ask_before_running, "Ask first").changed() {
                 app.settings_changed();
@@ -588,7 +588,7 @@ fn safety(app: &mut CraftApp, ui: &mut Ui) {
     row(
         ui,
         "Auto mode",
-        "Builds keep going without stopping to ask you before an action. The builder still never deletes outside its project, changes system settings or publishes anything, and stays within each project's asset budget.",
+        "By default, builds run commands and generated programs without asking. Project rules still apply; publishing, system changes, deletion outside the project, and asset budgets stay protected.",
         |ui| {
             if widgets::toggle(ui, &mut app.settings.auto_mode, "Keep going without asking").changed() {
                 app.settings_changed();

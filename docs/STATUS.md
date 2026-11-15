@@ -6,6 +6,28 @@ workspace clippy, layers, fmt and the secret scan of all history were clean. Chi
 
 ## What works, and how it was checked
 
+### Builder execution approvals (unreleased)
+
+User-started API builders approve engine execution/device-effect consent automatically across
+toolsets. Previously only Build tools were approved; a Runtime request such as
+`native_window_capture` received a synthetic rejection, which the model saw as
+`The user said no to running this tool.` Generated-program commands now follow the normal
+Commands policy: automatic mode allows them by default, manual mode asks, and explicit
+project Ask/Refuse choices still apply.
+
+The same caller and original parameters are retained. Clean Room, protected project records,
+publishing/system/outside-deletion policy, device/OS permissions, account/licence actions,
+and asset-price/budget checks are not bypassed. Safety settings explain that the prompt
+switch applies to manually run tools, while builders approve their engine tool calls.
+
+A real Worker + ApiConversation + EngineHost regression failed with the synthetic rejection
+before the fix and passed after it, reaching native tool path validation without launching a
+program. All 33 focused builder/engine/approval regressions, strict scoped Clippy, and Korean
+coverage passed. Installed CLI configuration with `ask_before_running=false` and
+`auto_mode=true` was saved and retained across an app restart; a deliberately missing capture
+program reached `bad_input`, not `consent_required`, without `--allow-run`.
+No original program, paid provider request, account operation, or licence acceptance was run.
+
 ### OMCA 0.4.6 unified workspace and native images
 
 One desktop workspace replaces the Simple/Advanced split. Projects stay visible beside

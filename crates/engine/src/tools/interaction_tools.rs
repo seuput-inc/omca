@@ -298,15 +298,6 @@ fn engine_build(part: &str) -> bool {
     }
 }
 
-/// A program the builder made inside app/, which needs approval before it runs. It must exist
-/// there: a bare name such as `rm` would otherwise look like `app/rm`.
-fn own_program(part: &str, app: &Path) -> bool {
-    let (prog, _) = program_of(part);
-    // The agent works from the workspace (app/'s parent) or from inside app/.
-    let bases = [app.parent().unwrap_or(app), app];
-    !prog.is_empty() && bases.iter().any(|b| resolve(b, prog).is_some_and(|p| inside(app, &p) && p != app && p.is_file()))
-}
-
 /// Decide a Bash command: every `&&`-joined part must be a safe build command, the game engine's
 /// own build, or a `cd` that stays inside the project, with no other shell control characters.
 fn decide_command(cmd: &str, app: &Path) -> Decision {
@@ -477,14 +468,7 @@ fn outcome(ws: Option<&Workspace>, auto_mode: bool, tool: &str, input: &Value) -
     // that pushes and changes the system needs both allowed.
     let gets = |kind: ActionKind| {
         let chosen = ws.and_then(|w| w.manifest.approvals.get(&kind).copied());
-        let generated_run = tool == "Bash"
-            && kind == ActionKind::Commands
-            && input.get("command").and_then(Value::as_str).is_some_and(|cmd| {
-                cmd.split("&&")
-                    .map(str::trim)
-                    .any(|part| part == "cargo run" || part.starts_with("cargo run ") || ws.is_some_and(|w| own_program(part, &w.app_dir())))
-            });
-        (kind, chosen, chosen.unwrap_or_else(|| if generated_run { Approval::Ask } else { kind.default_in(auto_mode) }))
+        (kind, chosen, chosen.unwrap_or_else(|| kind.default_in(auto_mode)))
     };
     let kinds = kinds_of(ws, tool, input);
     let Some((kind, chosen, approval)) = kinds.iter().map(|k| gets(*k)).fold(None, |best: Option<(ActionKind, Option<Approval>, Approval)>, next| match best {
@@ -1200,13 +1184,17 @@ mod tests {
             assert!(matches!(decide_command(ask, &app), Decision::Ask { .. }), "{ask}");
         }
         for cmd in ["cargo run -- --screenshot shots/now.png", "app/target/debug/game.exe --screenshot app/shots/now.png"] {
-            assert!(matches!(outcome(Some(&w), true, "Bash", &json!({"command": cmd})), Outcome::Ask { .. }), "{cmd}");
+            let input = json!({"command": cmd});
+            assert_eq!(outcome(Some(&w), true, "Bash", &input), Outcome::Allow, "{cmd}");
+            assert!(matches!(outcome(Some(&w), false, "Bash", &input), Outcome::Ask { .. }), "{cmd}");
         }
-        assert!(matches!(outcome(None, true, "Bash", &json!({"command": "cargo run"})), Outcome::Ask { .. }));
+        assert_eq!(outcome(None, true, "Bash", &json!({"command": "cargo run"})), Outcome::Allow);
         let mut w = w;
         let run = json!({"command": "cargo run"});
         w.manifest.approvals.insert(ActionKind::Commands, Approval::Allow);
         assert_eq!(outcome(Some(&w), true, "Bash", &run), Outcome::Allow);
+        w.manifest.approvals.insert(ActionKind::Commands, Approval::Ask);
+        assert!(matches!(outcome(Some(&w), true, "Bash", &run), Outcome::Ask { .. }));
         w.manifest.approvals.insert(ActionKind::Commands, Approval::Refuse);
         assert!(matches!(outcome(Some(&w), true, "Bash", &run), Outcome::Refuse(_)));
     }

@@ -22,15 +22,8 @@ fn runtime_tool_is_automatically_allowed_to_reach_validation() {
         ]),
         seen: Arc::default(),
     };
-    let slot = ModelSlot {
-        name: "Scripted".into(),
-        model: Box::new(script),
-        local: false,
-        effort: None,
-        max_turns: 10,
-        context_tokens: 0,
-        tools: Default::default(),
-    };
+    let slot =
+        ModelSlot { name: "Scripted".into(), model: Box::new(script), local: false, effort: None, max_turns: 10, context_tokens: 0, tools: Default::default() };
     let enabled = BTreeSet::from([Toolset::Core, Toolset::Build, Toolset::Runtime]);
     let mut api = ApiConversation::start_with(Arc::new(EngineHost(worker.engine.clone())), vec![slot], LoopConfig::default(), enabled).unwrap();
     let (tx, rx) = mpsc::channel();
