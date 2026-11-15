@@ -444,10 +444,7 @@ fn process_identity(pid: u32) -> Result<Option<String>, String> {
     #[cfg(windows)]
     {
         let id = std::ffi::OsString::from(pid.to_string());
-        let value = powershell(
-            "$p=Get-Process -Id ([int]$env:OMCA_OWNER_PID) -ErrorAction SilentlyContinue; if($p){[Console]::Write($p.StartTime.ToUniversalTime().Ticks.ToString()+'|'+$p.Path)}",
-            &[("OMCA_OWNER_PID", &id)],
-        )?;
+        let value = powershell(include_str!("update_owner.ps1"), &[("OMCA_OWNER_PID", &id)])?;
         Ok((!value.is_empty()).then_some(value))
     }
 }
