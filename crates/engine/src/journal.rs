@@ -47,17 +47,15 @@ pub fn bounded(v: &Value) -> Value {
 const SECRET_FIELDS: &[&str] =
     &["api_key", "apikey", "secret", "password", "passphrase", "token", "access_token", "refresh_token", "authorization", "private_key", "hidden_values"];
 
+fn is_secret_field(name: &str) -> bool {
+    let name = name.trim().to_ascii_lowercase().replace('-', "_");
+    SECRET_FIELDS.iter().any(|s| name == *s) || SECRET_NAMES.iter().any(|s| name == *s || name.strip_suffix(s).is_some_and(|prefix| prefix.ends_with('_')))
+}
+
 /// `v` with the value of every secret-named field (at any depth) replaced by `"(redacted)"`.
 pub fn redacted(v: &Value) -> Value {
     match v {
-        Value::Object(m) => Value::Object(
-            m.iter()
-                .map(|(k, val)| {
-                    let secret = SECRET_FIELDS.iter().any(|s| k.eq_ignore_ascii_case(s));
-                    (k.clone(), if secret { json!("(redacted)") } else { redacted(val) })
-                })
-                .collect(),
-        ),
+        Value::Object(m) => Value::Object(m.iter().map(|(k, val)| (k.clone(), if is_secret_field(k) { json!("(redacted)") } else { redacted(val) })).collect()),
         Value::Array(a) => Value::Array(a.iter().map(redacted).collect()),
         other => other.clone(),
     }
@@ -261,6 +259,13 @@ mod tests {
         let named = bounded(&json!({"path": "a.har", "hidden_values": ["pat@example.test", "tok-fake"]}));
         assert_eq!(named["hidden_values"], "(redacted)", "values a caller asks to hide");
         assert_eq!(named["path"], "a.har");
+        let headers = bounded(&json!({"headers": {"X-Api-Key": "a", "X-Auth-Token": "b", "Private-Token": "c"}}));
+        for key in ["X-Api-Key", "X-Auth-Token", "Private-Token"] {
+            assert_eq!(headers["headers"][key], "(redacted)", "{key}");
+        }
+        let env = bounded(&json!({"env": {"OPENROUTER_API_KEY": "k", "MAX_TOKENS": "100"}}));
+        assert_eq!(env["env"]["OPENROUTER_API_KEY"], "(redacted)");
+        assert_eq!(env["env"]["MAX_TOKENS"], "100");
     }
 
     use super::*;

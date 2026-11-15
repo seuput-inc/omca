@@ -15,6 +15,14 @@ test('model alias retains the requested provider id', () => {
   expect(models.every(model => model.provider_id === 'openai-codex-device')).toBe(true);
 });
 
+test('chat selection excludes image-only and other non-chat models', () => {
+  for (const provider of ['openai', 'openai-codex']) {
+    const models = modelList(provider);
+    expect(models.some(model => model.id.startsWith('gpt-image'))).toBe(false);
+    expect(models.some(model => model.id.startsWith('gpt-5'))).toBe(true);
+  }
+});
+
 test('disabled credential can be removed but not selected', () => {
   const rows: StoredAuthCredential[] = [{ id: 13, provider: 'openai', credential: { type: 'api_key', key: 'test-only' }, disabledCause: 'disabled' }];
   expect(canActOnAccount(rows, 13, 'remove_account')).toBe(true);

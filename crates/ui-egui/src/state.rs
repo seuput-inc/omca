@@ -9,7 +9,7 @@ use serde_json::Value;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-/// Simple-mode screens (Advanced mode is one workbench).
+/// Views within the workspace.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum Screen {
     #[default]
@@ -20,8 +20,7 @@ pub enum Screen {
     Project,
     /// A game's archives, and saving its pictures.
     GameFiles,
-    /// Advanced mode's workbench: every tool on the open target. Projects and their builds keep
-    /// their own screens beside it, so nothing being built goes out of sight.
+    /// Inspect a target with tools, evidence and logs.
     Workbench,
 }
 
@@ -427,6 +426,11 @@ pub struct UiState {
     pub right: RightTab,
     pub bottom: BottomTab,
     pub bottom_open: bool,
+    /// Inspection drawers are independent of the selected project and its draft.
+    #[serde(default)]
+    pub inspect_tools_open: bool,
+    #[serde(default)]
+    pub inspect_details_open: bool,
     /// The row picked in a rail list (JSON of the row).
     pub selection: Option<Value>,
     pub selected_evidence: Option<String>,
@@ -558,7 +562,9 @@ impl Default for UiState {
             views: BTreeMap::new(),
             right: RightTab::Inspector,
             bottom: BottomTab::Agent,
-            bottom_open: true,
+            bottom_open: false,
+            inspect_tools_open: false,
+            inspect_details_open: false,
             selection: None,
             selected_evidence: None,
             palette: PaletteState::default(),

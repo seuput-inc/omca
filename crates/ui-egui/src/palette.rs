@@ -5,14 +5,13 @@ use crate::i18n::tr;
 use crate::state::Screen;
 use crate::theme::{self, Tokens, size, space};
 use crate::{CraftApp, Pick, Route, icons, schema_form, widgets};
-use craft_anything_engine::{Consent, Mode};
+use craft_anything_engine::Consent;
 use egui::{RichText, Vec2};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum AppCommand {
     OpenFile,
     OpenFolder,
-    ToggleMode,
     ToggleDeep,
     ToggleTheme,
     Settings,
@@ -23,7 +22,6 @@ pub(crate) enum AppCommand {
 const APP_COMMANDS: &[(AppCommand, &str, &str)] = &[
     (AppCommand::OpenFile, "Open a file…", "folder-open"),
     (AppCommand::OpenFolder, "Open a folder or app bundle…", "folder"),
-    (AppCommand::ToggleMode, "Switch Beginner / Experienced", "graduation-cap"),
     (AppCommand::ToggleDeep, "Switch Clean room / Deep", "microscope"),
     (AppCommand::ToggleTheme, "Switch light / dark theme", "moon"),
     (AppCommand::Settings, "Settings", "settings"),
@@ -190,7 +188,8 @@ pub fn show(app: &mut CraftApp, ctx: &egui::Context) {
             if schema_form::fields(&schema).is_empty() {
                 app.state.palette.open = false;
                 app.run_tool(&id, serde_json::json!({}), Route::Palette, Consent::NotAsked);
-                app.set_mode(Mode::Experienced);
+                app.state.screen = Screen::Workbench;
+                app.ensure_rail_loaded();
             } else {
                 app.state.palette.form_tool = Some(id);
                 app.state.palette.form.clear();
@@ -216,10 +215,6 @@ pub(crate) fn run_app_command(app: &mut CraftApp, c: AppCommand) {
     match c {
         AppCommand::OpenFile => app.pick(Pick::OpenFile),
         AppCommand::OpenFolder => app.pick(Pick::OpenFolder),
-        AppCommand::ToggleMode => {
-            let m = if app.beginner() { Mode::Experienced } else { Mode::Beginner };
-            app.set_mode(m);
-        }
         AppCommand::ToggleDeep => {
             let on = !app.settings.deep_mode;
             app.set_deep(on);
@@ -232,7 +227,6 @@ pub(crate) fn run_app_command(app: &mut CraftApp, c: AppCommand) {
         AppCommand::Settings => app.state.settings_open = true,
         AppCommand::ExportReport => app.export_report(),
         AppCommand::Home => {
-            app.set_mode(Mode::Beginner);
             app.state.screen = Screen::Home;
         }
     }
@@ -293,7 +287,8 @@ fn form(app: &mut CraftApp, ctx: &egui::Context, tool: &str) {
                 app.state.palette.form_tool = None;
                 let consent = if spec.effects.needs_consent() { Consent::Granted } else { Consent::NotAsked };
                 app.run_tool(spec.id, params, Route::Palette, consent);
-                app.set_mode(Mode::Experienced);
+                app.state.screen = Screen::Workbench;
+                app.ensure_rail_loaded();
             }
             Err(e) => app.state.palette.form_error = Some(e),
         }

@@ -48,7 +48,7 @@ pub mod workbench;
 
 use craft_anything_ai::{AgentEvent, AiHub, BackendConfig, Conversation, Detected};
 use craft_anything_engine::evidence::{ErrorCode, Evidence, ToolError, Unknown};
-use craft_anything_engine::{CallOptions, Caller, Consent, Engine, Mode, Settings, TargetKind, ToolOutput, clean_room};
+use craft_anything_engine::{CallOptions, Caller, Consent, Engine, Settings, TargetKind, ToolOutput, clean_room};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use state::{CenterTab, ChatItem, ConsentAnswer, Fill, RailKind, Screen, UiState};
@@ -496,7 +496,7 @@ pub struct CraftApp {
     chat_jobs: Vec<u64>,
     view_dirty: bool,
     last_view: Option<Instant>,
-    applied_theme: Option<(ThemeKind, bool)>,
+    applied_theme: Option<ThemeKind>,
     started: bool,
 }
 
@@ -688,14 +688,6 @@ impl CraftApp {
         }
     }
 
-    pub fn mode(&self) -> Mode {
-        self.settings.mode
-    }
-
-    pub fn beginner(&self) -> bool {
-        self.settings.mode == Mode::Beginner
-    }
-
     pub fn theme_kind(&self) -> ThemeKind {
         ThemeKind::from_id(&self.settings.theme)
     }
@@ -811,19 +803,6 @@ impl CraftApp {
             session.settings = next;
             Ok(Done::Nothing)
         }));
-    }
-
-    pub fn set_mode(&mut self, mode: Mode) {
-        if self.settings.mode != mode {
-            self.settings.mode = mode;
-            self.settings_changed();
-            if mode == Mode::Experienced {
-                self.state.screen = Screen::Workbench;
-                self.ensure_rail_loaded();
-            } else if self.state.screen == Screen::Workbench {
-                self.state.screen = Screen::Home;
-            }
-        }
     }
 
     pub fn set_deep(&mut self, on: bool) {
@@ -1273,7 +1252,7 @@ impl CraftApp {
             self.backend_choices = self.backend_choices.wrapping_add(1);
         }
         if self.state.backend.is_some() && self.conversation.is_none() {
-            match self.hub.start(self.state.backend.as_deref(), self.beginner()) {
+            match self.hub.start(self.state.backend.as_deref(), self.state.explain_new) {
                 Ok(c) => self.conversation = Some(c),
                 // The AI that was picked didn't start (it may be turned off), so the error is the
                 // answer; an AI is set up, so the built-in engines' "no AI brain" line would be wrong.
@@ -1284,11 +1263,8 @@ impl CraftApp {
             }
         }
         if let Some(c) = self.conversation.as_mut() {
-            let sent = if self.settings.mode == Mode::Beginner && self.state.explain_new {
-                format!("{text}\n\n(Explain like I'm new to this: plain words, short sentences, no jargon.)")
-            } else {
-                text
-            };
+            let sent =
+                if self.state.explain_new { format!("{text}\n\n(Explain like I'm new to this: plain words, short sentences, no jargon.)") } else { text };
             c.send(&craft_anything_ai::prompt::with_response_language(&sent, &i18n::language()));
             return;
         }
@@ -1492,15 +1468,9 @@ impl CraftApp {
                     let name = v.get("name").and_then(Value::as_str).unwrap_or("it").to_string();
                     self.toast(i18n::trf("Opened {name}", &[("name", &name)]), false);
                     self.log(false, format!("Opened {}", path.display()));
-                    if self.beginner() {
-                        self.state.screen = Screen::Ask;
-                        self.state.chat.push(ChatItem::Status(i18n::trf("Opened {name}. Taking a first look…", &[("name", &name)])));
-                        self.first_look(&tr("Here's a first look:"), false);
-                    } else {
-                        self.state.screen = Screen::Workbench;
-                        self.state.rail = if self.state.rail == RailKind::Targets { RailKind::Functions } else { self.state.rail };
-                        self.load_rail(self.state.rail);
-                    }
+                    self.state.screen = Screen::Ask;
+                    self.state.chat.push(ChatItem::Status(i18n::trf("Opened {name}. Taking a first look…", &[("name", &name)])));
+                    self.first_look(&tr("Here's a first look:"), false);
                 }
                 Err(e) if clean_room::is_refusal(&e) => self.state.modal = Some(state::Modal::DeepMode),
                 Err(e) => {
@@ -1674,10 +1644,7 @@ impl CraftApp {
     pub fn tick(&mut self, ctx: &egui::Context) {
         if !self.started {
             self.started = true;
-            // Advanced mode opens on the workbench, unless a project was open.
-            if !self.beginner() && self.state.screen == Screen::Home {
-                self.state.screen = Screen::Workbench;
-            }
+            // Navigation is independent of the legacy mode preference.
             self.jobs.set_repaint(ctx);
             if !self.headless {
                 self.refresh_backends();
@@ -1686,9 +1653,9 @@ impl CraftApp {
                 self.check_asset_keys();
             }
         }
-        let want = (self.theme_kind(), self.beginner());
+        let want = self.theme_kind();
         if self.applied_theme != Some(want) {
-            theme::apply(ctx, want.0, want.1);
+            theme::apply(ctx, want);
             self.applied_theme = Some(want);
         }
         self.take_finished_jobs();
@@ -1771,23 +1738,20 @@ impl CraftApp {
             return;
         }
 
-        if self.beginner() || self.state.screen != Screen::Workbench {
-            egui::Panel::left("app-sidebar")
-                .exact_size(sidebar::width(self, &ctx))
-                .resizable(false)
-                .frame(widgets::pane(t.chrome, theme::pad_xy(space::SM, 0.0)))
-                .show(ui, |ui| guard_ui(ui, "sidebar", |ui| sidebar::show(self, ui)));
-            egui::CentralPanel::default().frame(widgets::pane(t.canvas, egui::Margin::ZERO)).show(ui, |ui| {
-                guard_ui(ui, "simple", |ui| match self.state.screen {
-                    Screen::Home | Screen::Workbench => home::show(self, ui),
-                    Screen::Ask => chat::ask_screen(self, ui),
-                    Screen::Project => project::show(self, ui),
-                    Screen::GameFiles => game_files::show(self, ui),
-                })
-            });
-        } else {
-            guard_ui(ui, "workbench", |ui| workbench::show(self, ui));
-        }
+        egui::Panel::left("app-sidebar")
+            .exact_size(sidebar::width(self, &ctx))
+            .resizable(false)
+            .frame(widgets::pane(t.chrome, theme::pad_xy(space::SM, 0.0)))
+            .show(ui, |ui| guard_ui(ui, "sidebar", |ui| sidebar::show(self, ui)));
+        egui::CentralPanel::default().frame(widgets::pane(t.canvas, egui::Margin::ZERO)).show(ui, |ui| {
+            guard_ui(ui, "workspace", |ui| match self.state.screen {
+                Screen::Home => home::show(self, ui),
+                Screen::Workbench => workbench::show(self, ui),
+                Screen::Ask => chat::ask_screen(self, ui),
+                Screen::Project => project::show(self, ui),
+                Screen::GameFiles => game_files::show(self, ui),
+            })
+        });
         palette::show(self, &ctx);
         settings_ui::show(self, &ctx);
         home::modals(self, &ctx);
@@ -2018,12 +1982,20 @@ impl eframe::App for CraftApp {
                 Ok(changes) => patch.merge(changes),
                 Err(e) => log::error!("Couldn't prepare settings edits on exit: {}", e.message),
             }
-            if !patch.is_empty()
-                && let Err(e) = self.settings.update_to(&self.settings_path, |current| patch.apply(current))
-            {
-                log::error!("Couldn't save settings edits on exit: {}", e.message);
-                if let Err(e) = patch.defer_to(&self.settings_path) {
-                    log::error!("Couldn't keep pending settings edits: {}", e.message);
+            if !patch.is_empty() {
+                let saved = if let Some(mut session) = self.engine.try_session() {
+                    session.settings.update_to(&self.settings_path, |current| patch.apply(current)).map(|next| {
+                        session.settings = next.clone();
+                        self.settings = next;
+                    })
+                } else {
+                    patch.defer_to(&self.settings_path)
+                };
+                if let Err(e) = saved {
+                    log::error!("Couldn't save settings edits on exit: {}", e.message);
+                    if let Err(e) = patch.defer_to(&self.settings_path) {
+                        log::error!("Couldn't keep pending settings edits: {}", e.message);
+                    }
                 }
             }
         }

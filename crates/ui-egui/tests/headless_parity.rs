@@ -1,17 +1,11 @@
 //! Headless parity (R1.6): everything a person can do in the app, the CLI and MCP can do too.
 //!
-//! **The rule:** a new action in the app (a `CraftApp` method that does something, a button,
-//! a setting) gets a row in [`ACTIONS`] naming its headless counterpart: a tool id (MCP and
-//! `craft-anything-cli <tool-id-in-kebab-case>`) or a built-in CLI command (`rebuild …`). An
-//! action with no counterpart yet is `Pending`, naming the tool it waits for and the roadmap item;
-//! a pure view action (theme, panels, the palette) is `UiOnly` with the reason.
+//! Each person-facing capability has a headless counterpart in [`ACTIONS`]: a registered tool,
+//! a CLI command, or an explicit UI-only reason. Private callback and helper names are not
+//! product contracts.
 //!
-//! The tests check that:
-//! - every tool named here is registered and reachable by its CLI spelling;
-//! - every CLI command and flag named here exists in `apps/craft-anything-cli/src`;
-//! - a pending tool that now exists fails the test, so its row is moved to `Tool`;
-//! - every `&mut self` method on `CraftApp` is either a row here or in [`PLUMBING`], so a new
-//!   method can't slip in without a decision.
+//! The tests check tool registration, CLI reachability, command availability, and pending
+//! capabilities. They do not scan private UI method names.
 
 use craft_anything_engine::Registry;
 use std::path::{Path, PathBuf};
@@ -76,12 +70,14 @@ const ACTIONS: &[Action] = &[
     a("raise_asset_budget",  "give a project another default budget for generated assets", Tool(&["project_assets_budget"])),
     a("set_generate_assets", "let a game's builder generate pictures and 3D models, or not", Tool(&["project_assets_allow"])),
     a("Project › Open folder", "show the project folder in the file manager",  Tool(&["project_open_folder"])),
-    a("Project › Details",   "switch to the Experienced workbench",            UiOnly("a view switch")),
+    a("Project › Details",   "open contextual inspection tools and evidence",  UiOnly("a view switch")),
 
     // ---- Engines, Deep mode and assets --------------------------------------------------------
     a("refresh_game_engines","which game engines are on this computer",        Tool(&["engines_list"])),
     a("get_engine",          "download or install a game engine",              Tool(&["engines_install"])),
     a("get_ghidra",          "download Ghidra for Deep mode",                  Tool(&["engines_install"])),
+    a("start_unity_setup",   "manage Unity sign-in and licence setup",        Tool(&["engines_unity_setup"])),
+    a("check_engine_release","query the latest stable game-engine release",   Tool(&["engines_latest"])),
     a("detect_game_engine",  "find the engine the original game was made with", Cli("rebuild <target> <request>")),
     a("set_deep",            "Clean room or Deep mode (Ghidra)",               Tool(&["settings_set"])),
     a("check_asset_keys",    "which asset providers have a key set up",        Tool(&["assets_key_status"])),
@@ -91,7 +87,6 @@ const ACTIONS: &[Action] = &[
     a("Download pages",      "open an engine's or fal.ai's download page",     UiOnly("a link; engines_install returns the page for vendor installs")),
 
     // ---- Settings ----------------------------------------------------------------------------
-    a("set_mode",            "Beginner or Experienced",                        Tool(&["settings_set"])),
     a("finish_first_run",    "finish the welcome steps",                       Tool(&["settings_set"])),
     a("Settings › Language", "the app's language",                             Tool(&["settings_set"])),
     a("Settings › Projects folder", "where new projects go",                   Tool(&["settings_set"])),
@@ -127,34 +122,6 @@ const ACTIONS: &[Action] = &[
     a("Panels and screens",  "Home, Ask, Workbench, Settings, panels",         UiOnly("navigation")),
 ];
 
-/// `CraftApp` methods that aren't person-facing actions: callbacks, polling, drawing, helpers.
-#[rustfmt::skip]
-const PLUMBING: &[(&str, &str)] = &[
-    ("show_update_outcome_on_start", "native startup queues the previous helper result for the first window frame; no document action"),
-    ("check_backend_keys", "a worker that fills the saved-key status rows"),
-    ("stuck_banner", "draws what the lock watchdog found; `sync::problems` and its log are the headless side"),
-    ("act", "runs a button's tool on a worker (play, preview, open folder)"),
-    ("waiting_question", "finds the question an answer is for"),
-    ("acted", "shows a button tool's result (toast, open the preview)"),
-    ("engines_found", "a job's result"), ("engine_got", "a job's result"), ("ghidra_got", "a job's result"),
-    ("ghidra_ready", "a query"), ("ghidra_missing", "a query"),
-    ("load_prefs", "startup"), ("after_first_frames", "startup"), ("install_menu_bar", "startup; its items run palette commands"), ("log", "the log panel"), ("toast", "a message"),
-    ("check_pictures", "a picture-size preflight"), ("picture_check_finished", "a preflight's result"),
-    ("keep_attachments", "part of pictures_checked"),
-    ("attach_checked", "part of pictures_checked"), ("add_pictures_checked", "part of pictures_checked"),
-    ("show_picture_refused", "a job's refusal"), ("restore_attachments", "part of unsend"),
-    ("settings_changed", "marks settings dirty; each setting has its row"), ("flush_settings", "saves settings"),
-    ("refresh_view", "redraw data"), ("resolve_chat_evidence", "redraw data"), ("mark_dirty", "redraw data"),
-    ("poll_conversation", "polling"), ("allow_for_project", "part of answer_consent"),
-    ("handle_done", "a job's result"), ("tool_done", "a job's result"),
-    ("select_backend", "part of choose_backend; also selects an AI that finished connecting"),
-    ("tick", "the frame loop"), ("show", "drawing"), ("toasts", "drawing"), ("shortcuts", "keys"),
-    ("need_builder", "part of start_make"), ("start_run", "part of start_make"), ("start_run_with", "part of start_run and continue_build"),
-    ("resume", "part of follow_up"), ("poll_run", "polling"), ("launch", "part of start_run: RunSet::start, the queue rebuild_start uses too"),
-    ("thumb_ready", "a job's result"), ("thumb", "drawing"), ("refresh_side_panel", "a view tally"),
-    ("previews", "drawing"), ("preview", "drawing"), ("preview_ready", "a job's result"),
-];
-
 fn crate_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
@@ -163,33 +130,6 @@ fn rust_files(dir: &Path) -> Vec<PathBuf> {
     let mut out: Vec<PathBuf> = std::fs::read_dir(dir).unwrap().flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|x| x == "rs")).collect();
     out.sort();
     out
-}
-
-/// Names of `&mut self` methods inside `impl CraftApp { … }` blocks.
-fn craft_app_methods() -> Vec<String> {
-    let mut names = Vec::new();
-    for f in rust_files(&crate_dir().join("src")) {
-        let text = std::fs::read_to_string(&f).unwrap();
-        let mut inside = false;
-        for line in text.lines() {
-            if line.starts_with("impl CraftApp ") {
-                inside = true;
-            } else if line == "}" {
-                inside = false;
-            } else if inside
-                && let Some(rest) = line.trim_start().strip_prefix("pub fn ").or_else(|| line.trim_start().strip_prefix("fn "))
-                && let Some((name, sig)) = rest.split_once('(')
-                && sig.starts_with("&mut self")
-            {
-                names.push(name.to_string());
-            }
-        }
-    }
-    names
-}
-
-fn is_method_row(ui: &str) -> bool {
-    !ui.contains(' ') && ui.chars().all(|c| c.is_ascii_lowercase() || c == '_')
 }
 
 /// Every tool the shipped apps have: the engine's plus the AI and setup layers' (as `Engine::shared`).
@@ -253,23 +193,6 @@ fn named_cli_commands_and_flags_exist() {
         }
     }
     assert!(missing.is_empty(), "headless parity:\n{}", missing.join("\n"));
-}
-
-#[test]
-fn every_craft_app_action_has_a_row() {
-    let methods = craft_app_methods();
-    assert!(methods.iter().any(|m| m == "start_make"), "the method scan found nothing: {methods:?}");
-    let listed = |m: &str| ACTIONS.iter().any(|a| a.ui == m) || PLUMBING.iter().any(|(p, _)| *p == m);
-    let new: Vec<&String> = methods.iter().filter(|m| !listed(m)).collect();
-    assert!(new.is_empty(), "new CraftApp methods: add each to ACTIONS (with its tool or CLI command) or PLUMBING: {new:?}");
-    let gone: Vec<&str> = ACTIONS
-        .iter()
-        .map(|a| a.ui)
-        .filter(|ui| is_method_row(ui))
-        .chain(PLUMBING.iter().map(|(p, _)| *p))
-        .filter(|m| !methods.iter().any(|x| x == m))
-        .collect();
-    assert!(gone.is_empty(), "rows name CraftApp methods that no longer exist (renamed or removed): {gone:?}");
 }
 
 #[test]

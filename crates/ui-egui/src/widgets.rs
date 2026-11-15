@@ -52,6 +52,15 @@ use crate::theme::{self, Tokens, confidence_color, confidence_label, size, space
 use craft_anything_engine::evidence::Confidence;
 use egui::{Color32, Frame, Margin, Response, RichText, Sense, Stroke, Ui, Vec2};
 
+pub fn help(ui: &mut Ui, topic: &str, text: &str) {
+    let label = crate::i18n::trf("Help: {topic}", &[("topic", &tr(topic))]);
+    let button = icons::button(ui, "circle-help", size::CONTROL_SM, false, &label);
+    egui::Popup::from_toggle_button_response(&button).show(|ui| {
+        ui.set_max_width(size::TILE_LG * 10.0);
+        ui.label(egui::RichText::new(tr(text)).size(theme::SMALL));
+    });
+}
+
 /// Lay out `text` in the label style ([`theme::label_text`]) for painting.
 pub fn label_galley(ui: &Ui, text: &str, size: f32, color: Color32) -> std::sync::Arc<egui::Galley> {
     egui::WidgetText::from(theme::label_text(text, size).color(color)).into_galley(
@@ -455,6 +464,8 @@ pub fn link(ui: &mut Ui, label: &str) -> Response {
     let t = Tokens::get(ui.ctx());
     let r = ui.add(egui::Label::new(RichText::new(tr(label)).color(t.accent_ink)).sense(Sense::click()));
     let r = r.on_hover_cursor(egui::CursorIcon::PointingHand);
+    r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), tr(label)));
+    focus_ring(ui, &r, r.rect);
     if r.hovered() {
         let y = r.rect.bottom();
         ui.painter().hline(r.rect.x_range(), y, Stroke::new(1.0, t.accent_ink));
@@ -865,6 +876,47 @@ pub fn open_log_button(ui: &mut Ui, path: &std::path::Path) -> bool {
 mod tests {
     use super::*;
     use std::time::Duration;
+
+    #[test]
+    fn inline_actions_are_announced_as_buttons_and_work_with_the_keyboard() {
+        use egui_kittest::kittest::Queryable as _;
+        let mut h = egui_kittest::Harness::new_ui_state(
+            |ui, calls: &mut usize| {
+                if link(ui, "Retry").clicked() {
+                    *calls += 1;
+                }
+            },
+            0,
+        );
+        h.run_steps(3);
+        h.get_by_role_and_label(egui::accesskit::Role::Button, &tr("Retry")).focus();
+        h.run_steps(2);
+        h.key_press(egui::Key::Space);
+        h.run_steps(3);
+        assert_eq!(*h.state(), 1);
+    }
+
+    #[test]
+    fn help_is_hidden_until_opened_and_supports_keyboard_and_pointer() {
+        use egui_kittest::kittest::Queryable as _;
+        let topic = "Projects";
+        let detail = "Choose what to recreate, say what you want, then press Start.";
+        let label = crate::i18n::trf("Help: {topic}", &[("topic", &tr(topic))]);
+        let mut h = egui_kittest::Harness::new_ui(|ui| help(ui, topic, detail));
+        h.run_steps(3);
+        assert!(h.query_by_label(&tr(detail)).is_none());
+        h.get_by_label(&label).focus();
+        h.run_steps(2);
+        h.key_press(egui::Key::Space);
+        h.run_steps(3);
+        assert!(h.query_by_label(&tr(detail)).is_some());
+        h.key_press(egui::Key::Escape);
+        h.run_steps(3);
+        assert!(h.query_by_label(&tr(detail)).is_none());
+        h.get_by_label(&label).click();
+        h.run_steps(3);
+        assert!(h.query_by_label(&tr(detail)).is_some());
+    }
 
     /// Every action's icon is bundled: a missing one would quietly draw as a square.
     #[test]

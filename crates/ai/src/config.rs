@@ -43,20 +43,20 @@ pub(crate) fn save_agent_selection(
 ) -> Result<bool, ToolError> {
     let current = AiConfig::from_table(&session.settings.ai)?;
     let name = &context.backend.config.name;
-    let mut found = false;
     let next = session.settings.update_to(path, |settings| {
         let mut config = AiConfig::from_table(&settings.ai)?;
-        let Some(entry) = config.backends.iter_mut().find(|e| &e.config.name == name) else { return Ok(()) };
+        let Some(entry) = config.backends.iter_mut().find(|e| &e.config.name == name) else {
+            return Err(ToolError::invalid("The AI backend was removed while its models were loading. Reload the settings and try again."));
+        };
         if current.get(name) != Some(&context.backend) || *entry != context.backend || session.project.as_ref().map(|p| p.root.clone()) != context.directory {
             return Err(ToolError::invalid("The AI settings changed while its models were loading. Reload the models and try again."));
         }
         entry.options = options;
         settings.ai = config.to_table()?;
-        found = true;
         Ok(())
     })?;
     session.settings = next;
-    Ok(found)
+    Ok(true)
 }
 
 /// Which tools a builder on an API backend is offered (Settings → AI, `ai tools`).

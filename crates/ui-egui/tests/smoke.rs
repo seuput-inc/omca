@@ -53,7 +53,7 @@ fn first_run_walks_through_four_screens() {
     if !craft_anything_ui_egui::titlebar::NATIVE_FRAME {
         h.get_by_label("Close");
     }
-    h.get_by_label("I'm new to this").click();
+    h.get_by_label("Continue").click();
     h.run_steps(3);
     assert_eq!(h.state().state.first_run, FirstRunStep::Brain);
     assert_eq!(h.state().settings.mode, Mode::Beginner);
@@ -127,12 +127,12 @@ fn first_run_continue_is_reachable_at_the_smallest_window() {
 }
 
 #[test]
-fn simple_title_bar_keeps_only_the_essentials() {
+fn title_bar_keeps_essential_controls() {
     let mut h = harness(|| demo::app(demo::engine(Mode::Beginner, true)));
     h.run_steps(3);
-    assert!(h.query_by_label("Advanced").is_none(), "the mode switch lives in Settings in Simple mode");
-    h.get_by_label("Settings");
-    h.get_by_label("Clean room");
+    let settings = h.get_all_by_label("Settings").min_by(|a, b| a.rect().top().total_cmp(&b.rect().top())).unwrap();
+    assert!(settings.rect().top() < h.get_by_label("New project").rect().top(), "Settings is in the title bar");
+    h.get_by_role_and_label(egui::accesskit::Role::CheckBox, "Clean room");
 }
 
 #[test]
@@ -166,8 +166,8 @@ fn a_game_is_built_with_its_engine_and_a_missing_engine_is_got_first() {
     h.run_steps(4);
     assert_eq!(h.state().state.modal, Some(Modal::Engine(Builder::Unity)));
     assert!(h.state().engine_flow.start_after);
-    // The first step: Unity's own installer where we can check its signature, else its website.
-    h.get_by_label(if cfg!(windows) { "Download Unity Hub" } else { "Get Unity Hub" });
+    // Unity must be installed and licensed before the waiting build can start.
+    h.get_by_label("Check Unity setup");
     h.get_by_label("Build with Godot instead");
     assert!(h.state().projects.iter().all(|p| p.manifest.request != "Recreate this game"), "nothing started yet");
 }
@@ -178,10 +178,9 @@ fn fal_key(stored: bool) -> std::collections::BTreeMap<String, bool> {
 }
 
 #[test]
-fn turning_on_generated_assets_without_a_fal_key_asks_for_one() {
+fn generated_assets_without_a_fal_key_remain_optional_and_explain_costs() {
     use craft_anything_engine::workspace::TargetRef;
     use craft_anything_engines::game::{Builder, Installed, Inventory};
-    use craft_anything_ui_egui::state::Modal;
     let d = tempfile::tempdir().unwrap();
     let game = d.path().join("game");
     std::fs::create_dir_all(&game).unwrap();
@@ -204,24 +203,46 @@ fn turning_on_generated_assets_without_a_fal_key_asks_for_one() {
     h.get_by_label("Generate custom pictures and models").click();
     h.run_steps(3);
     assert!(h.state().state.make.generate_assets);
-    assert_eq!(h.state().state.modal, Some(Modal::Assets), "no key yet, so it's asked for");
+    assert!(h.state().state.modal.is_none(), "a fal.ai key is not mandatory");
+    h.get_by_label_contains("No generation is attempted without a supported connection.");
+    h.get_by_label("Optional fal.ai setup").scroll_to_me();
+    h.run_steps(3);
+    assert!(h.ctx.content_rect().contains(h.get_by_label("Optional fal.ai setup").rect().center()), "optional setup is in the window");
+    h.get_by_label("Optional fal.ai setup").focus();
+    h.run_steps(2);
+    assert!(h.get_by_label("Optional fal.ai setup").is_focused());
+    h.key_press(egui::Key::Space);
+    h.run_steps(3);
+    assert_eq!(h.state().state.modal, Some(craft_anything_ui_egui::state::Modal::Assets));
     h.get_by_label("Your fal.ai key");
     h.get_by_label("fal.ai key");
     h.get_by_label("Not now").click();
     h.run_steps(3);
-    assert_eq!(h.state().state.modal, None);
-    assert!(!h.state().state.make.generate_assets, "without a key it goes back off");
-    // The switch says what it costs and what happens without it, in either mode.
+    assert!(h.state().state.modal.is_none());
+    assert!(h.state().state.make.generate_assets, "declining optional setup keeps the person's choice");
+    h.get_by_label("Optional fal.ai setup").scroll_to_me();
+    h.run_steps(3);
+    assert!(h.ctx.content_rect().contains(h.get_by_label("Optional fal.ai setup").rect().center()), "optional setup is in the window");
+    h.get_by_label("Optional fal.ai setup").focus();
+    h.run_steps(2);
+    assert!(h.get_by_label("Optional fal.ai setup").is_focused());
+    h.key_press(egui::Key::Space);
+    h.run_steps(3);
+    assert_eq!(h.state().state.modal, Some(craft_anything_ui_egui::state::Modal::Assets));
+    h.key_press(egui::Key::Escape);
+    h.run_steps(3);
+    assert!(h.state().state.modal.is_none());
+    assert!(h.state().state.make.generate_assets, "closing optional setup keeps the person's choice");
     for deep in [true, false] {
         h.state_mut().settings.deep_mode = deep;
         h.run_steps(2);
-        h.get_by_label_contains("Off, the game is built without them.");
+        h.get_by_label_contains("No generation is attempted without a supported connection.");
         assert!(h.query_by_label_contains("original game").is_none());
     }
-    // With a key, turning it on asks nothing.
     h.state_mut().asset_keys = Some(fal_key(true));
-    h.get_by_label("Generate custom pictures and models").click();
     h.run_steps(3);
+    h.get_by_label_contains("Optional fal.ai generation:");
+    h.get_by_label_contains("Off, no assets are generated.");
     assert!(h.state().state.make.generate_assets && h.state().state.modal.is_none());
 }
 
@@ -240,14 +261,13 @@ fn deep_mode_without_ghidra_asks_to_get_it_before_using_it() {
         select_demo_account(&mut a);
         // An empty engine store: no Ghidra here.
         a.settings.engines.store_dir = Some(store);
+        a.settings.engines.only_configured = true;
         a.state.make.target = TargetRef::Local { path: game };
         a.state.make.game = true;
         a.state.make.request = "Recreate this game".into();
-        a.state.make.builder = Some(Builder::Unity);
-        a.game_engines = Some(Inventory {
-            engines: vec![Installed { builder: Builder::Unity, version: "6000.0.23f1".into(), program: "Unity.exe".into() }],
-            ..Default::default()
-        });
+        a.state.make.builder = Some(Builder::Godot);
+        a.game_engines =
+            Some(Inventory { engines: vec![Installed { builder: Builder::Godot, version: "4.4.1".into(), program: "godot".into() }], ..Default::default() });
         a.asset_keys = Some(fal_key(true));
         a
     });
@@ -333,8 +353,15 @@ fn a_game_project_shows_its_asset_spending_and_can_raise_the_budget() {
     let mut ws = Workspace::create(d.path(), "Snake", "A snake game", TargetRef::None).unwrap();
     ws.manifest.stack = "Unity".into();
     ws.save().unwrap();
-    ws.record_asset(AssetRecord { file: "Assets/Generated/crate.glb".into(), kind: "model".into(), prompt: "a crate".into(), cost_usd: 0.51, at_ms: 0 })
-        .unwrap();
+    ws.record_asset(AssetRecord {
+        file: "Assets/Generated/crate.glb".into(),
+        kind: "model".into(),
+        prompt: "a crate".into(),
+        cost_usd: 0.51,
+        cost_unknown: false,
+        at_ms: 0,
+    })
+    .unwrap();
     let root = ws.root.clone();
     let mut h = harness(move || {
         let mut a = demo::app(demo::engine(Mode::Beginner, true));
@@ -343,13 +370,23 @@ fn a_game_project_shows_its_asset_spending_and_can_raise_the_budget() {
         a
     });
     assert!(wait(&mut h, |a| a.facts.assets.0 == 1));
+    h.get_by_label("Project details").click();
+    h.run_steps(3);
     h.get_by_label("1 · $0.51 of $5.00");
     // Generated assets are the person's choice, saved with the project through project_assets_allow.
-    h.get_by_label("Generate custom pictures and models").click();
+    h.get_by_label("Generate custom pictures and models").scroll_to_me();
+    h.run_steps(2);
+    assert!(h.ctx.content_rect().contains(h.get_by_label("Generate custom pictures and models").rect().center()), "asset permission is in the window");
+    h.get_by_label("Generate custom pictures and models").focus();
+    h.run_steps(2);
+    assert!(h.get_by_label("Generate custom pictures and models").is_focused());
+    h.key_press(egui::Key::Space);
     assert!(wait(&mut h, |a| a.workspace.as_ref().is_some_and(|w| w.manifest.generate_assets)));
     assert!(Workspace::open(&root).unwrap().manifest.generate_assets);
     assert!(h.state().state.modal.is_none(), "a key is set up");
     // Through the project_assets_budget tool, by the default budget from Settings.
+    h.get_by_label("Raise the budget by $5.00").scroll_to_me();
+    h.run_steps(2);
     h.get_by_label("Raise the budget by $5.00").click();
     assert!(wait(&mut h, |a| a.workspace.as_ref().is_some_and(|w| w.manifest.asset_budget_usd == 10.0)));
     assert_eq!(Workspace::open(&root).unwrap().manifest.asset_budget_usd, 10.0);
@@ -484,7 +521,8 @@ fn the_sidebar_lists_projects_and_moves_between_them() {
     h.run_steps(3);
     h.get_by_label("New project");
     assert!(h.query_by_label("Look inside an app").is_none(), "looking inside is on the New project screen");
-    h.get_by_label("Settings");
+    let settings = h.get_all_by_label("Settings").max_by(|a, b| a.rect().top().total_cmp(&b.rect().top())).unwrap();
+    assert!(settings.rect().top() > h.get_by_label("New project").rect().top(), "Settings is in the sidebar");
     h.get_by_label("Snake, Ready").click();
     h.run_steps(3);
     assert_eq!(h.state().state.screen, Screen::Project);
@@ -492,9 +530,39 @@ fn the_sidebar_lists_projects_and_moves_between_them() {
     h.get_by_label("New project").click();
     h.run_steps(3);
     assert_eq!(h.state().state.screen, Screen::Home);
-    h.get_by_label("Settings").click();
+    h.get_all_by_label("Settings").max_by(|a, b| a.rect().top().total_cmp(&b.rect().top())).unwrap().click();
     h.run_steps(3);
     assert!(h.state().state.settings_open);
+}
+
+#[test]
+fn project_result_shows_the_check_capture_without_a_similarity_score() {
+    use craft_anything_engine::tools::web_common::{Image, encode_png};
+    use craft_anything_engine::workspace::{CheckResult, TargetRef, Workspace};
+    use craft_anything_ui_egui::state::FeedItem;
+
+    let dir = tempfile::tempdir().unwrap();
+    let ws = Workspace::create(dir.path(), "Game", "Build a game", TargetRef::None).unwrap();
+    let relative = std::path::PathBuf::from("checks/round-3/screenshot.png");
+    let capture = ws.root.join(&relative);
+    std::fs::create_dir_all(capture.parent().unwrap()).unwrap();
+    let png = encode_png(&Image { width: 2, height: 1, rgba: vec![255, 0, 0, 255, 0, 0, 255, 255] }).unwrap();
+    std::fs::write(capture, png).unwrap();
+    let mut check = CheckResult::new("app-screenshot", 3, true, "The program starts and draws.");
+    check.artifacts.push(relative);
+    let mut h = harness(move || {
+        let mut a = demo::app(demo::engine(Mode::Beginner, true));
+        a.workspace = Some(ws);
+        a.state.screen = Screen::Project;
+        a.state.feed.push(FeedItem::Check(check));
+        a
+    });
+    let start = Instant::now();
+    while h.query_by_label("Latest result capture").is_none() && start.elapsed() < Duration::from_secs(10) {
+        h.step();
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    h.get_by_label("Latest result capture");
 }
 
 #[test]
@@ -631,6 +699,8 @@ fn pictures_of_the_original_go_with_the_draft_then_into_the_project() {
     h.state_mut().workspace = Some(ws);
     h.state_mut().state.screen = Screen::Project;
     h.run_steps(3);
+    h.get_by_label("Project details").click();
+    h.run_steps(3);
     h.get_by_label("Add pictures of the original");
     h.state_mut().add_pictures(vec![pic]);
     assert!(wait(&mut h, |a| a.facts.references == 1), "copied on a worker, then counted again");
@@ -700,7 +770,11 @@ fn a_finished_build_can_be_pinned_and_opened_from_the_sidebar() {
     });
     assert!(wait(&mut h, |a| a.facts.program));
     h.run_steps(2);
+    h.get_by_label("Project details").click();
+    h.run_steps(3);
     assert!(h.query_by_label("Pinned builds").is_none(), "no Pinned section before anything is pinned");
+    h.get_by_label("Pin this build").scroll_to_me();
+    h.run_steps(2);
     h.get_by_label("Pin this build").click();
     // The dialog works out what a frozen copy takes; frozen is picked.
     assert!(wait(&mut h, |a| matches!(a.state.pin_draft.size, Some(Ok(_)))));
@@ -965,7 +1039,7 @@ fn website_choice_stays_picked_while_the_address_is_empty() {
 }
 
 #[test]
-fn mode_switch_and_deep_toggle() {
+fn deep_toggle_reaches_the_engine() {
     let store = tempfile::tempdir().unwrap();
     let empty = store.path().to_path_buf();
     let mut h = harness(move || {
@@ -974,16 +1048,6 @@ fn mode_switch_and_deep_toggle() {
         a
     });
     h.run_steps(3);
-    // Simple mode: the switch is in Settings.
-    h.state_mut().state.settings_open = true;
-    h.run_steps(3);
-    h.get_by_label("Advanced").click();
-    h.run_steps(4);
-    h.state_mut().state.settings_open = false;
-    h.run_steps(3);
-    assert_eq!(h.state().settings.mode, Mode::Experienced);
-    // The setting reaches the engine's session (it's what tools check).
-    assert!(wait(&mut h, |a| a.engine.try_session().is_some_and(|s| s.settings.mode == Mode::Experienced)));
     h.state_mut().set_deep(true);
     assert!(wait(&mut h, |a| a.engine.try_session().is_some_and(|s| s.settings.deep_mode && !s.clean_room())));
     // No Ghidra in the store: Deep mode offers it first. (Hover first, as a mouse does: the
@@ -993,9 +1057,6 @@ fn mode_switch_and_deep_toggle() {
     h.get_by_label("Not now").click();
     h.run_steps(3);
     assert_eq!(h.state().state.modal, None, "Not now closes it");
-    h.get_by_label("Simple").click();
-    h.run_steps(3);
-    assert_eq!(h.state().settings.mode, Mode::Beginner);
 }
 
 #[test]
@@ -1008,9 +1069,15 @@ fn a_failure_with_a_log_offers_to_open_it_and_one_without_does_not() {
     });
     h.run_steps(4);
     h.get_by_label_contains("ssh printed: no");
+    h.get_by_label("Error details").click();
+    h.run_steps(2);
     assert!(h.query_by_label("Open log").is_none());
+    h.get_by_label("Error details").click();
+    h.run_steps(2);
     h.state_mut().state.chat = vec![ChatItem::Error { message: "It failed.".into(), remediation: None, log: Some("/tmp/agent.log".into()) }];
     h.run_steps(4);
+    h.get_by_label("Error details").click();
+    h.run_steps(2);
     h.get_by_label("Open log");
 }
 
@@ -1185,6 +1252,9 @@ fn workbench_lists_fall_back_gracefully() {
     let mut h = harness(|| {
         let mut a = demo::app(demo::engine(Mode::Experienced, true));
         demo::fill_workbench(&mut a);
+        a.state.inspect_tools_open = true;
+        a.state.inspect_details_open = true;
+        a.state.bottom_open = true;
         a
     });
     h.run_steps(4);
@@ -1220,6 +1290,7 @@ fn the_agent_console_status_stays_clear_of_its_tabs_when_narrow() {
     let mut h = harness_sized(egui::vec2(1000.0, 500.0), || {
         let mut a = demo::app(demo::engine(Mode::Experienced, true));
         demo::fill_workbench(&mut a);
+        a.state.bottom_open = true;
         a
     });
     h.run_steps(4);
@@ -1239,6 +1310,7 @@ fn the_agent_console_keeps_its_size() {
     let mut h = harness_sized(egui::vec2(1890.0, 1025.0), || {
         let mut a = demo::app(demo::engine(Mode::Experienced, true));
         demo::fill_workbench(&mut a);
+        a.state.bottom_open = true;
         a
     });
     h.run_steps(4);
@@ -1256,6 +1328,7 @@ fn the_agent_console_prompt_box_starts_tall_and_grows_inside_the_window() {
     let mut h = harness_sized(egui::vec2(1920.0, 1030.0), || {
         let mut a = demo::app(demo::engine(Mode::Experienced, true));
         demo::fill_workbench(&mut a);
+        a.state.bottom_open = true;
         a
     });
     h.run_steps(4);
@@ -1288,6 +1361,7 @@ fn the_agent_console_leaves_room_for_the_code_in_a_small_window() {
     let mut h = harness_sized(egui::vec2(1000.0, 500.0), || {
         let mut a = demo::app(demo::engine(Mode::Experienced, true));
         demo::fill_workbench(&mut a);
+        a.state.bottom_open = true;
         a
     });
     h.run_steps(4);
@@ -1304,6 +1378,7 @@ fn the_agent_console_can_be_resized() {
     let mut h = harness_sized(egui::vec2(1920.0, 1030.0), || {
         let mut a = demo::app(demo::engine(Mode::Experienced, true));
         demo::fill_workbench(&mut a);
+        a.state.bottom_open = true;
         a
     });
     h.run_steps(4);
@@ -1401,24 +1476,22 @@ fn title_bar_keeps_its_size_when_zoomed() {
         let mut h = harness_sized(egui::vec2(1360.0, 600.0), || demo::app(demo::engine(Mode::Experienced, true)));
         h.ctx.set_zoom_factor(zoom);
         h.run_steps(4);
-        // The topmost node with the label: Settings and Advanced appear in the bar first.
+        // The topmost Settings control is in the title bar.
         let rect = |label: &str| {
             let r = h.get_all_by_label(label).map(|n| n.rect()).min_by(|a, b| a.top().total_cmp(&b.top())).unwrap();
             egui::Rect::from_min_max(r.min * zoom, r.max * zoom)
         };
-        (rect("Settings"), rect("Advanced"), rect("Filter"))
+        (rect("Settings"), rect("New project"))
     };
-    let (settings, advanced, filter) = on_screen(1.0);
+    let (settings, project) = on_screen(1.0);
     // The bar is the system title bar's height, and its controls sit centred in it.
     assert!((settings.center().y - 16.0).abs() <= 1.0, "settings button at {settings:?}");
     for zoom in [0.5, 1.5] {
-        let (s, a, f) = on_screen(zoom);
-        for (name, at_100, now) in [("Settings", settings, s), ("Advanced", advanced, a)] {
-            let moved = (now.min - at_100.min).length().max((now.max - at_100.max).length());
-            assert!(moved <= 1.0, "{name} moved {moved} pt at {zoom}x: {at_100:?} → {now:?}");
-        }
-        let grew = f.height() / filter.height();
-        assert!((grew - zoom).abs() < 0.15, "the body should zoom: Filter grew {grew}x at {zoom}x");
+        let (s, p) = on_screen(zoom);
+        let moved = (s.min - settings.min).length().max((s.max - settings.max).length());
+        assert!(moved <= 1.0, "Settings moved {moved} pt at {zoom}x: {settings:?} → {s:?}");
+        let grew = p.height() / project.height();
+        assert!((grew - zoom).abs() < 0.15, "the body should zoom: New project grew {grew}x at {zoom}x");
     }
 }
 
@@ -1868,6 +1941,8 @@ fn a_projects_saved_time_and_ai_use_show_beside_it_and_the_session_total_in_the_
         a
     });
     h.run_steps(3);
+    h.get_by_label("Project details").click();
+    h.run_steps(3);
     h.get_by_label("Time spent");
     h.get_by_label("12m 05s");
     // A coding agent's figure is called an estimate, in the open and not only on hover.
@@ -1897,6 +1972,8 @@ fn a_big_cost_doesnt_paint_over_its_caption() {
         }
         a
     });
+    h.run_steps(3);
+    h.get_by_label("Project details").click();
     h.run_steps(3);
     let caption = h.get_by_label("AI cost (estimate)").rect();
     let value = h.get_by_label("about $13021.36").rect();
@@ -2121,6 +2198,7 @@ fn a_build_that_stopped_part_way_offers_to_continue() {
     h.run_steps(3);
     assert_eq!(Workspace::open(&paused.root).unwrap().manifest.status, Status::Ready);
     assert!(h.query_by_label("Continue").is_none(), "nothing left to carry on");
+    assert_eq!(Workspace::open(&paused.root).unwrap().manifest.note, craft_anything_engine::tools::project_tools::CALLED_DONE);
     h.get_by_label(craft_anything_engine::tools::project_tools::CALLED_DONE);
     h.state_mut().open_workspace(cut.clone());
     h.run_steps(3);
@@ -2139,6 +2217,8 @@ fn the_builders_open_questions_show_beside_the_project() {
         demo::fill_project(&mut a);
         a
     });
+    h.run_steps(3);
+    h.get_by_label("Project details").click();
     h.run_steps(3);
     h.get_by_label("Open questions");
     h.get_by_label("May the original's logo and text be reused, or must they be placeholders?");
@@ -2187,6 +2267,7 @@ fn a_new_project_can_start_in_a_folder_that_already_has_the_persons_files() {
     use craft_anything_engine::workspace::{ExistingFiles, Workspace};
     use craft_anything_ui_egui::state::Modal;
     let (d, mine) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let mine_path = mine.path().canonicalize().unwrap();
     std::fs::write(mine.path().join("index.html"), "<p>hi</p>").unwrap();
     let runs = StandIns::new();
     let (dir, r) = (d.path().to_path_buf(), runs.clone());
@@ -2208,11 +2289,11 @@ fn a_new_project_can_start_in_a_folder_that_already_has_the_persons_files() {
     h.state_mut().start_make();
     assert!(wait(&mut h, |a| a.creating.is_none() && a.workspace.is_some()), "made on a worker");
     let ws = Workspace::open(mine.path()).expect("the project is in the picked folder");
-    assert!(ws.manifest.app_in_root && ws.app_dir() == mine.path());
+    assert!(ws.manifest.app_in_root && ws.app_dir() == mine_path);
     assert_eq!(std::fs::read_to_string(mine.path().join("index.html")).unwrap(), "<p>hi</p>");
-    assert_eq!(runs.started(), [mine.path().to_path_buf()]);
-    assert!(h.state().settings.project_folders.contains(&mine.path().to_path_buf()), "it stays in the list");
-    assert!(wait(&mut h, |app| app.projects.iter().any(|w| w.root == mine.path())), "and is listed");
+    assert_eq!(runs.started(), std::slice::from_ref(&mine_path));
+    assert!(h.state().settings.project_folders.contains(&mine_path), "it stays in the list");
+    assert!(wait(&mut h, |app| app.projects.iter().any(|w| w.root == mine_path)), "and is listed");
     assert_eq!(std::fs::read_dir(d.path()).map(|r| r.count()).unwrap_or(0), 0, "nothing in the projects folder");
 
     // The next folder with files uses the remembered answer.
@@ -2222,7 +2303,7 @@ fn a_new_project_can_start_in_a_folder_that_already_has_the_persons_files() {
     h.run_steps(2);
     assert!(h.state().state.modal.is_none() && h.state().state.make.existing == Some(ExistingFiles::Edit));
     h.state_mut().pause();
-    assert!(runs.finish(mine.path()));
+    assert!(runs.finish(&mine_path));
     h.run_steps(2);
 }
 
@@ -2233,13 +2314,14 @@ fn the_front_door_works_on_a_project_the_person_already_has() {
     use craft_anything_ai::rebuild::StandIns;
     use craft_anything_engine::workspace::{ExistingFiles, TargetRef, Workspace};
     let (d, mine, empty) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let mine_path = mine.path().canonicalize().unwrap();
     std::fs::write(mine.path().join("index.html"), "<p>hi</p>").unwrap();
     let runs = StandIns::new();
     let (dir, r) = (d.path().to_path_buf(), runs.clone());
     let mut h = harness(move || stand_in_app(dir, &r));
     h.run_steps(2);
     h.state_mut().state.make.target = TargetRef::Website { url: "https://example.com".into() };
-    h.get_by_label("Work on my project").click();
+    h.get_by_role_and_label(egui::accesskit::Role::Button, "Work on my project").click();
     h.run_steps(3);
     assert!(h.state().state.make.mine && !h.state().state.make.look);
     assert_eq!(h.state().state.make.target, TargetRef::None, "nothing to recreate");
@@ -2268,7 +2350,7 @@ fn the_front_door_works_on_a_project_the_person_already_has() {
     assert!(h.state().state.make.folder.is_none() && h.state().state.make.existing.is_none());
     craft_anything_ui_egui::folders::picked_own(h.state_mut(), mine.path().to_path_buf());
     assert!(h.state().state.make.folder.is_none(), "a dialog that ends after leaving the door is dropped");
-    h.get_by_label("Work on my project").click();
+    h.get_by_role_and_label(egui::accesskit::Role::Button, "Work on my project").click();
     h.run_steps(3);
     h.get_by_label("Choose your project's folder…");
     craft_anything_ui_egui::folders::picked_own(h.state_mut(), mine.path().to_path_buf());
@@ -2277,11 +2359,11 @@ fn the_front_door_works_on_a_project_the_person_already_has() {
     h.get_by_label("Start").click();
     assert!(wait(&mut h, |a| a.creating.is_none() && a.workspace.is_some()), "made on a worker");
     let ws = Workspace::open(mine.path()).expect("the project is the person's folder");
-    assert!(ws.manifest.app_in_root && ws.app_dir() == mine.path());
+    assert!(ws.manifest.app_in_root && ws.app_dir() == mine_path);
     assert_eq!(ws.manifest.target, TargetRef::None, "an address in the request isn't an original");
     assert_eq!(ws.manifest.name, mine.path().file_name().unwrap().to_string_lossy(), "named after its folder");
     assert_eq!(std::fs::read_to_string(mine.path().join("index.html")).unwrap(), "<p>hi</p>");
-    assert_eq!(runs.started(), [mine.path().to_path_buf()]);
+    assert_eq!(runs.started(), std::slice::from_ref(&mine_path));
     assert_eq!(std::fs::read_dir(d.path()).map(|r| r.count()).unwrap_or(0), 0, "nothing in the projects folder");
 
     // Back on the door, the same folder is a project now, so it opens.
@@ -2290,7 +2372,7 @@ fn the_front_door_works_on_a_project_the_person_already_has() {
     h.run_steps(2);
     assert!(h.state().state.toasts.iter().any(|(text, err)| !*err && text.contains("already a project")));
     h.state_mut().pause();
-    assert!(runs.finish(mine.path()));
+    assert!(runs.finish(&mine_path));
     h.run_steps(2);
 }
 
@@ -2309,7 +2391,7 @@ fn work_on_my_project_builds_with_the_engine_its_folder_uses() {
         a
     });
     h.run_steps(3);
-    h.get_by_label("Work on my project").click();
+    h.get_by_role_and_label(egui::accesskit::Role::Button, "Work on my project").click();
     h.run_steps(3);
     craft_anything_ui_egui::folders::picked_own(h.state_mut(), mine.path().to_path_buf());
     h.state_mut().state.make.request = "Fix my game's jump".into();
@@ -2604,6 +2686,8 @@ fn a_paused_build_shows_where_it_stopped() {
         a
     });
     h.run_steps(3);
+    h.get_by_label("Project details").click();
+    h.run_steps(3);
     h.get_by_label("Study: Done");
     h.get_by_label("Build: Stopped here");
     assert!(h.query_by_label("Pause").is_none(), "nothing to pause");
@@ -2627,22 +2711,32 @@ fn opening_another_target_starts_a_new_conversation() {
 }
 
 #[test]
-fn advanced_mode_keeps_projects_and_their_questions_in_sight() {
-    let mut h = harness(|| {
-        let mut a = demo::app(demo::engine(Mode::Experienced, true));
-        demo::fill_project(&mut a);
-        a
-    });
-    h.run_steps(3);
-    // The project's approval card is on screen in Advanced mode too, with the sidebar beside it.
-    h.get_by_label("Allow once");
-    h.get_by_label("Workbench").click();
-    h.run_steps(3);
-    assert_eq!(h.state().state.screen, Screen::Workbench);
-    h.get_by_label("Projects and builds").click();
-    h.run_steps(3);
-    assert_eq!(h.state().state.screen, Screen::Project, "back to the open project");
-    h.get_by_label("Allow once");
+fn legacy_preferences_share_navigation_and_keep_project_drafts() {
+    for mode in [Mode::Beginner, Mode::Experienced] {
+        let mut h = harness(move || {
+            let mut a = demo::app(demo::engine(mode, true));
+            demo::fill_project(&mut a);
+            a.state.project_input = "Keep this draft".into();
+            a
+        });
+        h.run_steps(3);
+        h.get_by_label("Allow once");
+        h.get_by_label("Inspect").click();
+        h.run_steps(3);
+        h.get_by_label("New project");
+        h.get_by_label("Pseudo-C");
+        h.get_by_label("Hex");
+        h.get_by_label("Graph");
+        h.get_by_label("Source");
+        h.get_by_label("Network");
+        h.get_by_label("Details and evidence").click();
+        h.run_steps(3);
+        h.get_by_label("Evidence");
+        h.get_by_label("Project chat").click();
+        h.run_steps(3);
+        h.get_by_label("Allow once");
+        assert_eq!(h.state().state.project_input, "Keep this draft");
+    }
 }
 
 #[test]
@@ -2671,6 +2765,10 @@ fn a_project_is_renamed_duplicated_and_deleted_from_its_page() {
         a
     });
     h.run_steps(3);
+    h.get_by_label("Project details").click();
+    h.run_steps(3);
+    h.get_by_label("Rename").scroll_to_me();
+    h.run_steps(2);
     h.get_by_label("Rename").click();
     h.run_steps(2);
     assert_eq!(h.state().state.modal, Some(Modal::Rename(root.clone())));
@@ -2681,9 +2779,13 @@ fn a_project_is_renamed_duplicated_and_deleted_from_its_page() {
 
     assert!(wait(&mut h, |a| a.workspace.as_ref().is_some_and(|w| w.manifest.name == "Snake II")), "renamed through project_rename");
 
+    h.get_by_label("Duplicate").scroll_to_me();
+    h.run_steps(2);
     h.get_by_label("Duplicate").click();
     assert!(wait(&mut h, |a| a.projects.iter().any(|w| w.manifest.name == "Snake II copy")), "the copy is listed");
 
+    h.get_by_label("Delete the project").scroll_to_me();
+    h.run_steps(2);
     h.get_by_label("Delete the project").click();
     h.run_steps(2);
     h.get_by_label("Delete Snake II?");
@@ -2721,7 +2823,7 @@ fn a_narrow_window_folds_the_sidebar_and_puts_the_project_details_above_the_feed
     // Folded to icons: the names are still there for screen readers and on hover.
     let new = h.get_by_label("New project").rect();
     assert!(new.width() <= 60.0, "the sidebar is folded: {new:?}");
-    h.get_by_label("Project details");
+    h.get_by_label("Result and project details");
     assert!(h.query_by_label("Open folder").is_none(), "folded away until opened");
     let send = h.get_by_label("Send (Enter)").rect();
     assert!(send.max.x <= 760.0 && send.max.y <= 820.0, "the prompt box fits: {send:?}");
@@ -2768,7 +2870,7 @@ fn a_long_line_in_the_builders_words_stays_in_the_window() {
     assert!(r.min.x >= 0.0 && r.max.x <= 1280.0, "the builder's line leaves the window: {r:?}");
 }
 
-/// #666: in Experienced mode, the tool-work rows (their status notes) wrap inside the window too.
+/// #666: expanded tool-work status notes wrap inside the window.
 #[test]
 fn a_long_status_note_in_the_work_rows_stays_in_the_window() {
     use craft_anything_ui_egui::state::FeedItem;
@@ -2780,6 +2882,8 @@ fn a_long_status_note_in_the_work_rows_stays_in_the_window() {
         a.state.feed.push(FeedItem::Work { tools: Vec::new(), notes: vec![format!("header {note}")] });
         a
     });
+    h.run_steps(3);
+    h.get_by_label("Worked through 1 steps").click();
     h.run_steps(3);
     let r = h.get_by_label_contains("first local_10b0").rect();
     eprintln!("RECT {r:?}");

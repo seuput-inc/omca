@@ -133,7 +133,7 @@ pub fn suggestions(kind: Option<TargetKind>) -> Vec<&'static str> {
     }
 }
 
-/// Beginner Ask screen: target card on the left, conversation in the centre.
+/// Target conversation with its details alongside.
 pub fn ask_screen(app: &mut CraftApp, ui: &mut Ui) {
     let t = Tokens::get(ui.ctx());
     let side_w = 300.0_f32.min(ui.available_width() * 0.3);
@@ -171,6 +171,11 @@ fn target_card(app: &mut CraftApp, ui: &mut Ui) {
                     }
                     widgets::pill(ui, &format!("{} {}", app.view.ledger_len, tr("findings")), t.text_dim, t.raised);
                 });
+                ui.add_space(space::M);
+                if widgets::secondary(ui, Some("microscope"), "Inspect tools and evidence").clicked() {
+                    app.state.screen = crate::state::Screen::Workbench;
+                    app.ensure_rail_loaded();
+                }
             }
             None => {
                 widgets::empty_state(ui, "folder-open", "Nothing open yet", "Drop a file or app anywhere in this window.");
@@ -265,11 +270,10 @@ fn history(app: &mut CraftApp, ui: &mut Ui, dense: bool, pad: f32, max_w: f32) {
                     greeting(app, ui, dense);
                 }
                 let mut actions = Vec::new();
-                let beginner = app.beginner();
                 let last_proof = app.state.chat.iter().rposition(|i| matches!(i, ChatItem::Proof { .. }));
                 for (i, item) in app.state.chat.iter().enumerate() {
                     let open = !dense && Some(i) == last_proof;
-                    ui.push_id(i, |ui| item_ui(ui, item, beginner, dense, open, &mut actions));
+                    ui.push_id(i, |ui| item_ui(ui, item, true, dense, open, &mut actions));
                     ui.add_space(if dense { space::XS } else { MESSAGE_GAP });
                 }
                 // Only for this conversation: a build or a download elsewhere isn't an answer.

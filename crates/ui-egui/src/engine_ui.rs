@@ -509,7 +509,9 @@ pub fn ghidra_status(app: &mut CraftApp, ui: &mut Ui) {
 /// Which asset providers have a key stored, by id.
 fn stored_keys(hub: &craft_anything_ai::AiHub) -> BTreeMap<String, bool> {
     let all = AssetProviders::built_in();
-    all.ids().into_iter().map(|id| (id.to_string(), hub.has_asset_key(&all, id))).collect()
+    let mut available: BTreeMap<_, _> = all.ids().into_iter().map(|id| (id.to_string(), hub.has_asset_key(&all, id))).collect();
+    available.insert("managed-images".into(), hub.provider_client().image_capabilities().is_ok_and(|caps| !caps.is_empty()));
+    available
 }
 
 impl CraftApp {
@@ -522,9 +524,13 @@ impl CraftApp {
         self.jobs.spawn("Check the asset keys", false, move |_| Ok(Done::AssetKeys(stored_keys(&hub))));
     }
 
-    /// Whether a fal.ai key is set up: it makes the generated pictures and models.
-    pub fn fal_key(&self) -> Option<bool> {
-        self.asset_keys.as_ref().map(|k| k.get(fal::ID).copied().unwrap_or(false))
+    fn managed_images(&self) -> bool {
+        self.settings.assets.image_model.as_deref().is_none_or(|m| m.trim().is_empty())
+            && self.asset_keys.as_ref().is_some_and(|k| k.get("managed-images") == Some(&true))
+    }
+
+    fn images_ready(&self) -> Option<bool> {
+        self.asset_keys.as_ref().map(|k| self.managed_images() || k.get(fal::ID).copied().unwrap_or(false))
     }
 
     /// Save an asset provider's key in the system keychain.
@@ -546,9 +552,7 @@ impl CraftApp {
         });
     }
 
-    /// Let the builder generate pictures and 3D models, or not: for the open project on its screen
-    /// (through the project_assets_allow tool), else for the game being set up on Make. Turning it
-    /// on without a fal.ai key asks for one.
+    /// Allow asset generation without requiring a separate service's key.
     pub fn set_generate_assets(&mut self, on: bool) {
         let project = self.workspace.as_ref().filter(|_| self.state.screen == Screen::Project).map(|w| w.root.clone());
         match project {
@@ -557,9 +561,6 @@ impl CraftApp {
                 self.act("project_assets_allow", serde_json::json!({"project": root, "allow": on}), title);
             }
             None => self.state.make.generate_assets = on,
-        }
-        if on && self.fal_key() == Some(false) {
-            self.state.modal = Some(Modal::Assets);
         }
     }
 }
@@ -594,25 +595,29 @@ pub fn assets_toggle(app: &mut CraftApp, ui: &mut Ui, mut on: bool) {
     if widgets::toggle(ui, &mut on, "Generate custom pictures and models").changed() {
         app.set_generate_assets(on);
     }
-    let no_key = on && app.fal_key() == Some(false);
-    let note = if no_key {
-        tr("Needs a fal.ai key. Until then the game is built without them.")
+    let no_key = on && app.images_ready() == Some(false);
+    let note = if app.managed_images() {
+        tr(
+            "Pictures use your connected GPT account. Subscription credits or charges may apply; unknown costs require your approval. fal.ai is optional for pictures and is needed for 3D models.",
+        )
+    } else if no_key {
+        tr("Connect a GPT account that supports image generation, or optionally add a fal.ai key. No generation is attempted without a supported connection.")
     } else {
         let p = AssetPrices::of(app);
         trf(
-            "Made with fal.ai and paid from your account: {model} a 3D model, {picture} a picture. Off, the game is built without them.",
+            "Optional fal.ai generation: {model} a 3D model, {picture} a picture. Off, no assets are generated.",
             &[("model", &p.model), ("picture", &p.picture)],
         )
     };
     ui.horizontal_wrapped(|ui| {
         ui.label(RichText::new(note).color(if no_key { t.warning } else { t.text_dim }).size(theme::SMALL));
-        if no_key && widgets::link(ui, "Add a fal.ai key").clicked() {
+        if no_key && widgets::link(ui, "Optional fal.ai setup").clicked() {
             app.state.modal = Some(Modal::Assets);
         }
     });
 }
 
-/// Asks for a fal.ai key when generated assets are turned on without one.
+/// Optional fal.ai connection, independent of the project's generation choice.
 pub fn assets_modal(app: &mut CraftApp, ui: &mut Ui, close: &mut bool) {
     let t = Tokens::get(ui.ctx());
     ui.set_width(520.0);
@@ -620,7 +625,7 @@ pub fn assets_modal(app: &mut CraftApp, ui: &mut Ui, close: &mut bool) {
         widgets::icon_tile(ui, "boxes", size::TILE_LG);
         ui.vertical(|ui| {
             ui.label(theme::heading(tr("Your fal.ai key"), theme::SECTION));
-            ui.label(RichText::new(tr("Generated pictures and 3D models are made with fal.ai.")).color(t.text_dim));
+            ui.label(RichText::new(tr("fal.ai is optional for pictures and provides 3D generation.")).color(t.text_dim));
         });
     });
     ui.add_space(space::M);
@@ -648,7 +653,6 @@ pub fn assets_modal(app: &mut CraftApp, ui: &mut Ui, close: &mut bool) {
     ui.add_space(space::L);
     if widgets::secondary(ui, None, "Not now").clicked() {
         *close = true;
-        app.set_generate_assets(false);
     }
 }
 
@@ -687,6 +691,7 @@ fn keys_link(ui: &mut Ui, provider: &dyn AssetProvider) {
 pub fn assets_settings(app: &mut CraftApp, ui: &mut Ui) {
     let t = Tokens::get(ui.ctx());
     ui.label(RichText::new(tr("Game assets")).font(theme::medium(theme::SMALL)));
+    ui.label(tr("Connected GPT image generation is used first when supported. fal.ai is optional for pictures and provides 3D generation. Unknown subscription-credit or monetary costs require explicit approval."));
     ui.add(
         egui::Label::new(
             RichText::new({
@@ -1252,6 +1257,26 @@ mod tests {
         app.engines_found(inventory);
         assert!(app.engine_flow.start_after, "file detection must not start the waiting build");
         assert_eq!(app.state.modal, Some(Modal::Engine(Builder::Unreal)));
+    }
+
+    #[test]
+    fn connected_native_images_do_not_require_a_fal_key_dialog() {
+        use egui_kittest::{Harness, kittest::Queryable};
+        let mut app = crate::demo::app(crate::demo::engine(craft_anything_engine::Mode::Beginner, true));
+        app.asset_keys = Some(BTreeMap::from([("managed-images".into(), true), ("fal".into(), false)]));
+        let mut h = Harness::builder().with_size(egui::vec2(760.0, 520.0)).build_ui_state(
+            |ui, app| {
+                theme::install_fonts(ui.ctx());
+                let enabled = app.state.make.generate_assets;
+                assets_toggle(app, ui, enabled);
+            },
+            app,
+        );
+        h.get_by_label("Generate custom pictures and models").click();
+        h.run_steps(3);
+        assert!(h.state().state.make.generate_assets);
+        assert_ne!(h.state().state.modal, Some(Modal::Assets));
+        assert!(h.query_by_label("Optional fal.ai setup").is_none());
     }
 
     #[test]

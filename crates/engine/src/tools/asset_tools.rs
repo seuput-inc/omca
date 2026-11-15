@@ -1,16 +1,12 @@
-//! Game assets the builder generates with fal.ai: `assets_image_generate` (a picture: a texture, a sky,
-//! concept art) and `assets_model_generate` (a low-poly GLB model, from a description or a picture). Each one
-//! is paid for, so a project has a budget: the builder spends freely under it, and the person is
-//! asked before it goes over. Nothing is generated unless the person turned it on for the project
-//! (`project_assets_allow`). Every asset and its cost is listed in the project (assets.json).
-//! The provider comes from the `AssetProviders` registry and the models and prices from the
-//! asset table, so the cost is known before anything is spent.
+//! Generate pictures and game-ready 3D models inside a project. A project must allow asset
+//! generation and has a budget; spending beyond it requires the person's approval.
+//! Known costs are estimated before generation; unknown costs require explicit approval.
 
 use crate::inbox::Inbox;
 use crate::tool::{Ctx, Effects, Requires, ToolOutput, ToolSpec, Toolset, parse_params, schema_of};
 use crate::tools::interaction_tools::{Verdict, ask_approval, inbox, inside, resolve, workspace_of};
 use crate::workspace::{AssetRecord, Workspace};
-use craft_anything_engines::assets::{AssetProvider, AssetProviders, AssetRequest, Catalogue, Generated, Shape, about_usd, fal, usd};
+use craft_anything_engines::assets::{AssetProvider, AssetProviders, AssetRequest, Catalogue, Generated, Shape, fal, usd};
 use craft_anything_evidence::{ErrorCode, ToolError};
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -33,6 +29,7 @@ impl AssetKeys {
 
 /// Remembered when the person says "always" to going over the budget.
 const OVER_BUDGET: &str = "assets:over-budget";
+const UNKNOWN_COST: &str = "assets_unknown_cost";
 
 pub fn specs() -> Vec<ToolSpec> {
     let effects = Effects::ACCESSES_NETWORK.union(Effects::WRITES_FILESYSTEM);
@@ -62,23 +59,16 @@ pub fn specs() -> Vec<ToolSpec> {
     ]
 }
 
-/// The two tools' summaries, with the prices and face limits of the asset table's default models.
+/// Tool descriptions cannot assume which image provider is active in a session.
 fn summaries() -> &'static (String, String) {
     static TEXT: OnceLock<(String, String)> = OnceLock::new();
     TEXT.get_or_init(|| {
         let c = Catalogue::built_in();
-        let (picture, picture_model) = c.image_model(None).map(|m| (m.cost(Shape::Square), m.name.as_str())).unwrap_or((0.0, "the default model"));
         let (textured, faces) = c.model_3d(None).map(|m| (m.cost(true), m.faces())).unwrap_or((0.0, 48..=20_000));
-        let image = format!(
-            "Make a picture with fal.ai ({picture_model}) and save it as a PNG inside app/: a texture, a sky or background, an icon, a title screen or concept art. shape: square (1024x1024, default), wide (1024x576) or tall (576x1024). Costs {}, counted against the project's asset budget. Describe original designs in the original's style; never ask for recognisable characters, logos or brand artwork. Returns where it was saved, the cost and the budget left.",
-            about_usd(picture)
-        );
+        let image = "Make a picture and save it as a PNG inside app/: a texture, sky, icon, title screen or concept art. shape: square (1024x1024, default), wide (1024x576) or tall (576x1024). The selected provider determines the price; unknown subscription credit costs or monetary charges require approval and are not covered by the dollar budget. Describe original designs, never recognisable characters, logos or brand artwork. Returns the saved file and cost information.".to_string();
         let model = format!(
-            "Make a game-ready, low-poly 3D model (GLB) with fal.ai (Tripo P1) and save it inside app/. Give a prompt (a picture is made first, then turned into the model) or an image (a web address, or a picture inside the project such as reference/picture-1.png). faces caps the face count ({} to {}, default {DEFAULT_FACES}): about 500-1500 for small props and pickups, 2000-5000 for weapons, furniture and vehicles, 6000-15000 for main characters; fewer faces run faster, so use the fewest that still look right. textured (default true) gives colours and surfaces. A textured model costs {} plus {} for the picture, counted against the project's asset budget; it takes a minute or two. Describe one original object per model; never ask for recognisable characters, logos or brand artwork. Returns where it was saved, the cost and the budget left.",
-            faces.start(),
-            faces.end(),
-            usd(textured),
-            usd(picture)
+            "Make a game-ready, low-poly 3D model (GLB) with fal.ai and save it inside app/. Give a prompt (a picture is made first) or an image (a web address or project picture). faces caps the face count ({} to {}, default {DEFAULT_FACES}); fewer faces run faster. textured defaults to true. A textured model costs {} plus the selected picture provider's cost, if a picture is made first. Unknown subscription credit costs or monetary charges require approval and are not covered by the dollar budget. Describe one original object, never recognisable characters, logos or brand artwork.",
+            faces.start(), faces.end(), usd(textured)
         );
         (image, model)
     })
@@ -135,9 +125,6 @@ fn job(ctx: &Ctx<'_>) -> Result<Job, ToolError> {
     let keys = ctx.session.ext.get::<AssetKeys>().unwrap_or_default();
     // A session can bring its own providers (a fork, a test); otherwise the built-in ones.
     let providers = ctx.session.ext.get::<AssetProviders>().map(|p| p.as_ref().clone()).unwrap_or_default();
-    if !providers.ids().iter().any(|id| keys.get(id).is_some()) {
-        return Err(no_key("fal.ai"));
-    }
     if !ws.manifest.generate_assets {
         return Err(ToolError::new(ErrorCode::NoPermission, "The person hasn't turned on generated assets for this project.").with_remediation(
             "Make these assets with simple shapes and colours instead, and tell the person they can turn on generated assets for this game in the app.",
@@ -147,15 +134,19 @@ fn job(ctx: &Ctx<'_>) -> Result<Job, ToolError> {
 }
 
 fn no_key(provider: &str) -> ToolError {
-    ToolError::new(ErrorCode::BadSettings, format!("No {provider} key is set up, so pictures and 3D models can't be generated.")).with_remediation(format!(
-        "Make these assets with simple shapes and colours instead, and tell the person they can add a {provider} key in Settings → Models & accounts → Advanced → Game assets for realistic ones."
-    ))
+    ToolError::new(ErrorCode::BadSettings, format!("No {provider} key is configured for the selected asset provider.")).with_remediation(
+        "For pictures, connect an image-capable GPT account or optionally add a fal.ai key in Settings → Models & accounts → Game assets. For 3D models, configure the selected 3D provider. You can also use simple shapes and colours.",
+    )
 }
 
 impl Job {
-    /// The key for `provider`, checked before anything is asked or spent.
+    /// Only providers with managed credentials may receive an empty key.
     fn key(&self, provider: &dyn AssetProvider) -> Result<String, ToolError> {
-        self.keys.get(provider.id()).map(str::to_string).ok_or_else(|| no_key(provider.name()))
+        match self.keys.get(provider.id()) {
+            Some(key) => Ok(key.to_string()),
+            None if !provider.requires_key() => Ok(String::new()),
+            None => Err(no_key(provider.name())),
+        }
     }
 }
 
@@ -195,8 +186,34 @@ fn within_budget(ctx: &mut Ctx<'_>, inbox: &Inbox, ws: &mut Workspace, cost: f64
     }
 }
 
+fn approve_unknown_cost(ctx: &mut Ctx<'_>, inbox: &Inbox, ws: &mut Workspace) -> Result<(), ToolError> {
+    if ws.manifest.allowed_actions.iter().any(|key| key == UNKNOWN_COST) {
+        return Ok(());
+    }
+    if ctx.session.settings.auto_mode {
+        return Err(ToolError::new(
+            ErrorCode::NoPermission,
+            "Image generation may use subscription credits or incur monetary charges at an unavailable price and is not covered by the dollar budget; explicit approval is required.",
+        ));
+    }
+    match ask_approval(
+        ctx,
+        inbox,
+        Some(ws),
+        "Use subscription credits or incur charges for this image?",
+        "The price is unavailable. Subscription credits may be consumed or monetary charges incurred, and these costs are not covered by the project's dollar budget. Allow once, or always for this project.",
+        UNKNOWN_COST,
+    )? {
+        Verdict::Yes => Ok(()),
+        Verdict::No(_) | Verdict::NoAnswer => Err(ToolError::new(
+            ErrorCode::NoPermission,
+            "Image generation that may use subscription credits or incur monetary charges at an unknown price was not approved.",
+        )),
+    }
+}
+
 /// Save a generated file and list it with its cost.
-fn keep(ws: &Workspace, path: &Path, rel: &str, kind: &str, made_from: &str, g: &Generated) -> Result<(), ToolError> {
+fn keep(ws: &Workspace, path: &Path, rel: &str, kind: &str, made_from: &str, g: &Generated, cost_unknown: bool) -> Result<(), ToolError> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| ToolError::io(parent.display(), e))?;
     }
@@ -205,6 +222,7 @@ fn keep(ws: &Workspace, path: &Path, rel: &str, kind: &str, made_from: &str, g: 
         file: rel.to_string(),
         kind: kind.into(),
         prompt: made_from.chars().take(1000).collect(),
+        cost_unknown,
         cost_usd: g.cost_usd,
         at_ms: crate::inbox::now_ms(),
     })
@@ -241,15 +259,21 @@ fn assets_image_generate(ctx: &mut Ctx<'_>, params: Value) -> Result<ToolOutput,
     };
     let mut j = job(ctx)?;
     let (path, rel) = save_path(&j.ws, &p.save_as, "png")?;
-    let model = Catalogue::built_in().image_model(ctx.session.settings.assets.image_model.as_deref())?;
-    let req = AssetRequest::Image { model, prompt, shape };
+    let model = j.providers.image_model(Catalogue::built_in(), ctx.session.settings.assets.image_model.as_deref())?;
+    let req = AssetRequest::Image { model: &model, prompt, shape };
     let provider = j.providers.for_request(&req)?;
     let key = j.key(provider.as_ref())?;
-    within_budget(ctx, &j.inbox, &mut j.ws, provider.estimate(&req)?)?;
+    let cost_unknown = provider.cost_is_unknown();
+    if !cost_unknown {
+        within_budget(ctx, &j.inbox, &mut j.ws, provider.estimate(&req)?)?;
+    } else {
+        approve_unknown_cost(ctx, &j.inbox, &mut j.ws)?;
+    }
     ctx.report(None, "Making a picture…");
-    let g = provider.generate(&key, &req)?;
-    keep(&j.ws, &path, &rel, "image", prompt, &g)?;
-    Ok(summary(&j.ws, &rel, g.cost_usd, json!({})))
+    let cancel = ctx.cancel.clone();
+    let g = provider.generate_cancelled(&key, &req, std::sync::Arc::new(move || cancel.is_cancelled()))?;
+    keep(&j.ws, &path, &rel, "image", prompt, &g, cost_unknown)?;
+    Ok(summary(&j.ws, &rel, g.cost_usd, json!({"cost_unknown": cost_unknown})))
 }
 
 fn assets_model_generate(ctx: &mut Ctx<'_>, params: Value) -> Result<ToolOutput, ToolError> {
@@ -273,16 +297,23 @@ fn assets_model_generate(ctx: &mut Ctx<'_>, params: Value) -> Result<ToolOutput,
     let mut estimate = provider.estimate(&model_req)?;
     // From a prompt, a picture is made first: with the picture model chosen in Settings.
     let mut picture_maker = None;
+    let mut cost_unknown = false;
     if from_prompt {
-        let image_model = catalogue.image_model(ctx.session.settings.assets.image_model.as_deref())?;
-        let picture_req = AssetRequest::Image { model: image_model, prompt: &p.prompt, shape: Shape::Square };
+        let image_model = j.providers.image_model(catalogue, ctx.session.settings.assets.image_model.as_deref())?;
+        let picture_req = AssetRequest::Image { model: &image_model, prompt: &p.prompt, shape: Shape::Square };
         let picture_provider = j.providers.for_request(&picture_req)?;
         let picture_key = j.key(picture_provider.as_ref())?;
-        estimate += picture_provider.estimate(&picture_req)?;
+        cost_unknown = picture_provider.cost_is_unknown();
+        if !cost_unknown {
+            estimate += picture_provider.estimate(&picture_req)?;
+        }
         picture_maker = Some((image_model, picture_provider, picture_key));
     }
     let source = if from_prompt { None } else { Some(image_source(&j.ws, image)?) };
     within_budget(ctx, &j.inbox, &mut j.ws, estimate)?;
+    if cost_unknown {
+        approve_unknown_cost(ctx, &j.inbox, &mut j.ws)?;
+    }
     let mut cost = 0.0;
     let mut picture = Value::Null;
     let (url, made_from) = match source {
@@ -295,19 +326,29 @@ fn assets_model_generate(ctx: &mut Ctx<'_>, params: Value) -> Result<ToolOutput,
             let described = format!(
                 "{prompt}. One whole object, centred and fully in view, on a plain light-grey background, soft even lighting, three-quarter view, no text."
             );
-            let g = picture_provider.generate(&picture_key, &AssetRequest::Image { model: image_model, prompt: &described, shape: Shape::Square })?;
+            let cancel = ctx.cancel.clone();
+            let g = picture_provider.generate_cancelled(
+                &picture_key,
+                &AssetRequest::Image { model: &image_model, prompt: &described, shape: Shape::Square },
+                std::sync::Arc::new(move || cancel.is_cancelled()),
+            )?;
             let (pic_path, pic_rel) = save_path(&j.ws, &format!("{}.png", rel.trim_end_matches(".glb").trim_end_matches(".GLB")), "png")?;
-            keep(&j.ws, &pic_path, &pic_rel, "image", prompt, &g)?;
+            keep(&j.ws, &pic_path, &pic_rel, "image", prompt, &g, cost_unknown)?;
             cost += g.cost_usd;
             picture = Value::String(pic_rel);
             (g.url, prompt.to_string())
         }
     };
     ctx.report(None, "Turning it into a 3D model (a minute or two)…");
-    let g = provider.generate(&key, &AssetRequest::Model3d { model, image_url: &url, textured, faces })?;
-    keep(&j.ws, &path, &rel, "model", &made_from, &g)?;
+    let cancel = ctx.cancel.clone();
+    let g = provider.generate_cancelled(
+        &key,
+        &AssetRequest::Model3d { model, image_url: &url, textured, faces },
+        std::sync::Arc::new(move || cancel.is_cancelled()),
+    )?;
+    keep(&j.ws, &path, &rel, "model", &made_from, &g, false)?;
     cost += g.cost_usd;
-    Ok(summary(&j.ws, &rel, cost, json!({"picture": picture, "textured": textured, "faces": faces})))
+    Ok(summary(&j.ws, &rel, cost, json!({"picture": picture, "textured": textured, "faces": faces, "cost_unknown": cost_unknown})))
 }
 
 /// The picture a model is made from: a web address as it is, or a picture in the project sent
@@ -362,16 +403,11 @@ mod tests {
     }
 
     #[test]
-    fn the_summaries_read_the_asset_table() {
-        // The default picture model's name and price, and the default 3D model's.
-        assert_eq!(
-            summaries().0,
-            "Make a picture with fal.ai (Nano Banana Pro) and save it as a PNG inside app/: a texture, a sky or background, an icon, a title screen or concept art. shape: square (1024x1024, default), wide (1024x576) or tall (576x1024). Costs about $0.15, counted against the project's asset budget. Describe original designs in the original's style; never ask for recognisable characters, logos or brand artwork. Returns where it was saved, the cost and the budget left."
-        );
-        assert_eq!(
-            summaries().1,
-            "Make a game-ready, low-poly 3D model (GLB) with fal.ai (Tripo P1) and save it inside app/. Give a prompt (a picture is made first, then turned into the model) or an image (a web address, or a picture inside the project such as reference/picture-1.png). faces caps the face count (48 to 20000, default 3000): about 500-1500 for small props and pickups, 2000-5000 for weapons, furniture and vehicles, 6000-15000 for main characters; fewer faces run faster, so use the fewest that still look right. textured (default true) gives colours and surfaces. A textured model costs $0.50 plus $0.15 for the picture, counted against the project's asset budget; it takes a minute or two. Describe one original object per model; never ask for recognisable characters, logos or brand artwork. Returns where it was saved, the cost and the budget left."
-        );
+    fn descriptions_do_not_promise_a_fixed_image_provider_or_price() {
+        assert!(summaries().0.contains("selected provider"));
+        assert!(summaries().0.contains("not covered by the dollar budget"));
+        assert!(summaries().1.contains("fal.ai"));
+        assert!(summaries().1.contains("48 to 20000"));
     }
 
     /// Stands in for fal.ai: records each request's endpoint and answers with a few bytes.
@@ -390,7 +426,7 @@ mod tests {
             let (endpoint, bytes) = match req {
                 AssetRequest::Image { model, .. } => (model.endpoint.clone(), b"png".to_vec()),
                 AssetRequest::Model3d { model, image_url, .. } => {
-                    assert_eq!(*image_url, "https://stand-in/picture.png", "the model is made from the picture");
+                    assert!(["https://stand-in/picture.png", "data:image/png;base64,cG5n"].contains(image_url), "the model is made from the picture");
                     (model.endpoint.clone(), b"glb".to_vec())
                 }
                 _ => return Err(ToolError::invalid("the stand-in makes pictures and 3D models only")),
@@ -398,6 +434,235 @@ mod tests {
             self.0.lock().unwrap().push(endpoint);
             Ok(Generated { url: "https://stand-in/picture.png".into(), bytes, cost_usd: req.listed_cost() })
         }
+    }
+
+    #[derive(Default)]
+    struct Managed(craft_anything_platform::sync::Mutex<Vec<String>>);
+
+    impl AssetProvider for Managed {
+        fn id(&self) -> &'static str {
+            "managed"
+        }
+        fn name(&self) -> &'static str {
+            "Managed"
+        }
+        fn requires_key(&self) -> bool {
+            false
+        }
+        fn preferred_image_model(&self) -> Option<craft_anything_engines::assets::ImageModel> {
+            let mut model = Catalogue::fallback().image_model(None).unwrap().clone();
+            model.id = "managed-image".into();
+            model.provider = self.id().into();
+            model.endpoint = "managed-image".into();
+            model.usd_per_image = 0.20;
+            Some(model)
+        }
+        fn generate(&self, key: &str, req: &AssetRequest) -> Result<Generated, ToolError> {
+            assert_eq!(key, "");
+            let AssetRequest::Image { model, .. } = req else { panic!("expected an image request") };
+            self.0.lock().unwrap().push(model.id.clone());
+            Ok(Generated { url: "data:image/png;base64,cG5n".into(), bytes: b"png".to_vec(), cost_usd: req.listed_cost() })
+        }
+    }
+
+    struct UnknownCost(std::sync::Arc<Managed>);
+
+    impl AssetProvider for UnknownCost {
+        fn id(&self) -> &'static str {
+            self.0.id()
+        }
+        fn name(&self) -> &'static str {
+            self.0.name()
+        }
+        fn requires_key(&self) -> bool {
+            false
+        }
+        fn preferred_image_model(&self) -> Option<craft_anything_engines::assets::ImageModel> {
+            self.0.preferred_image_model()
+        }
+        fn cost_is_unknown(&self) -> bool {
+            true
+        }
+        fn generate(&self, key: &str, req: &AssetRequest) -> Result<Generated, ToolError> {
+            self.0.generate(key, req)
+        }
+    }
+
+    #[test]
+    fn unknown_cost_requires_approval_and_remembers_always() {
+        let (_d, w) = ws();
+        let managed = std::sync::Arc::new(Managed::default());
+        let e = managed_engine(&w, &managed, None, false);
+        let mut providers = AssetProviders::built_in();
+        providers.register(std::sync::Arc::new(UnknownCost(managed.clone())));
+        e.session().ext.insert(std::sync::Arc::new(providers));
+        e.session().settings.auto_mode = true;
+        let call = || e.call("assets_image_generate", json!({"prompt": "a crate", "save_as": "crate.png"}), crate::CallOptions::new(crate::Caller::Mcp));
+        assert_eq!(call().err().unwrap().code, ErrorCode::NoPermission);
+        assert!(managed.0.lock().unwrap().is_empty());
+        e.session().settings.auto_mode = false;
+        let dir = w.inbox_dir();
+        let answer = std::thread::spawn(move || {
+            let inbox = Inbox::new(dir);
+            for _ in 0..200 {
+                if let Some(request) = inbox.pending().first() {
+                    assert!(request.title.contains("subscription credits"));
+                    inbox.answer(&request.id, &Answer { allow: Some(true), always: true, ..Default::default() }).unwrap();
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(25));
+            }
+            panic!("no unknown-cost approval came");
+        });
+        let ToolOutput::Value(out) = call().unwrap() else { panic!("expected output") };
+        answer.join().unwrap();
+        assert_eq!(out["cost_unknown"], true);
+        assert!(w.assets()[0].cost_unknown);
+        assert!(Workspace::open(&w.root).unwrap().manifest.allowed_actions.iter().any(|key| key == UNKNOWN_COST));
+        e.session().settings.auto_mode = true;
+        call().unwrap();
+        assert_eq!(managed.0.lock().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn declining_unknown_cost_sends_no_request() {
+        let (_d, w) = ws();
+        let managed = std::sync::Arc::new(Managed::default());
+        let e = managed_engine(&w, &managed, None, false);
+        let mut providers = AssetProviders::built_in();
+        providers.register(std::sync::Arc::new(UnknownCost(managed.clone())));
+        e.session().ext.insert(std::sync::Arc::new(providers));
+        let dir = w.inbox_dir();
+        let answer = std::thread::spawn(move || {
+            let inbox = Inbox::new(dir);
+            for _ in 0..200 {
+                if let Some(request) = inbox.pending().first() {
+                    inbox.answer(&request.id, &Answer { allow: Some(false), ..Default::default() }).unwrap();
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(25));
+            }
+            panic!("no unknown-cost approval came");
+        });
+        let result = e.call("assets_image_generate", json!({"prompt": "a crate", "save_as": "crate.png"}), crate::CallOptions::new(crate::Caller::Mcp));
+        answer.join().unwrap();
+        assert_eq!(result.err().unwrap().code, ErrorCode::NoPermission);
+        assert!(managed.0.lock().unwrap().is_empty());
+        assert!(w.assets().is_empty());
+    }
+
+    fn managed_engine(w: &Workspace, managed: &std::sync::Arc<Managed>, image_model: Option<&str>, fal_key: bool) -> crate::Engine {
+        let mut providers = AssetProviders::built_in();
+        providers.register(managed.clone());
+        providers.register(std::sync::Arc::new(StandIn::default()));
+        let mut session = crate::testing::session();
+        session.settings.assets.image_model = image_model.map(str::to_string);
+        session.settings.auto_mode = false;
+        let e = crate::Engine::new(session);
+        e.session().ext.insert(std::sync::Arc::new(InboxDir(w.inbox_dir())));
+        e.session().ext.insert(std::sync::Arc::new(providers));
+        if fal_key {
+            e.session().ext.insert(std::sync::Arc::new(AssetKeys([("fal".into(), "k-1".into())].into())));
+        }
+        e
+    }
+
+    #[test]
+    fn managed_image_needs_no_asset_key_and_is_saved() {
+        let (_d, w) = ws();
+        let managed = std::sync::Arc::new(Managed::default());
+        let e = managed_engine(&w, &managed, None, false);
+        e.call("assets_image_generate", json!({"prompt": "a crate", "save_as": "crate.png"}), crate::CallOptions::new(crate::Caller::Mcp)).unwrap();
+        assert_eq!(*managed.0.lock().unwrap(), vec!["managed-image"]);
+        assert_eq!(std::fs::read(w.app_dir().join("crate.png")).unwrap(), b"png");
+        assert_eq!(w.assets().len(), 1);
+        assert!((w.assets_spent() - 0.20).abs() < 1e-9);
+    }
+
+    #[test]
+    fn explicit_fal_model_is_not_replaced_by_managed_image() {
+        let (_d, w) = ws();
+        let managed = std::sync::Arc::new(Managed::default());
+        let e = managed_engine(&w, &managed, Some("flux-schnell"), true);
+        e.call("assets_image_generate", json!({"prompt": "a crate", "save_as": "crate.png"}), crate::CallOptions::new(crate::Caller::Mcp)).unwrap();
+        assert!(managed.0.lock().unwrap().is_empty());
+        assert_eq!(std::fs::read(w.app_dir().join("crate.png")).unwrap(), b"png");
+        assert!((w.assets_spent() - 0.003 * 1.048576).abs() < 1e-9);
+    }
+
+    #[test]
+    fn discovery_failure_never_falls_back_to_fal_but_explicit_fal_still_works() {
+        let (_d, w) = ws();
+        let fal = std::sync::Arc::new(StandIn::default());
+        let mut providers = AssetProviders::built_in();
+        providers.register(fal.clone());
+        providers.set_image_discovery_error(Some(ToolError::new(ErrorCode::TimedOut, "image capability lookup failed")));
+        let mut session = crate::testing::session();
+        session.settings.assets.image_model = None;
+        let e = crate::Engine::new(session);
+        e.session().ext.insert(std::sync::Arc::new(InboxDir(w.inbox_dir())));
+        e.session().ext.insert(std::sync::Arc::new(AssetKeys([("fal".into(), "k-1".into())].into())));
+        e.session().ext.insert(std::sync::Arc::new(providers));
+        let err =
+            e.call("assets_image_generate", json!({"prompt": "a crate", "save_as": "crate.png"}), crate::CallOptions::new(crate::Caller::Mcp)).err().unwrap();
+        assert_eq!(err.code, ErrorCode::TimedOut);
+        assert!(fal.0.lock().unwrap().is_empty());
+        assert!(w.assets().is_empty());
+        e.session().settings.assets.image_model = Some("flux-schnell".into());
+        e.call("assets_image_generate", json!({"prompt": "a crate", "save_as": "crate.png"}), crate::CallOptions::new(crate::Caller::Mcp)).unwrap();
+        assert_eq!(*fal.0.lock().unwrap(), vec!["fal-ai/flux/schnell"]);
+        assert_eq!(std::fs::read(w.app_dir().join("crate.png")).unwrap(), b"png");
+    }
+
+    #[test]
+    fn declined_budget_stops_managed_image_request() {
+        let (_d, mut w) = ws();
+        w.set_person(|m| m.asset_budget_usd = 0.0).unwrap();
+        let managed = std::sync::Arc::new(Managed::default());
+        let e = managed_engine(&w, &managed, None, false);
+        let dir = w.inbox_dir();
+        let answer = std::thread::spawn(move || {
+            let inbox = Inbox::new(dir);
+            for _ in 0..200 {
+                if let Some(request) = inbox.pending().first() {
+                    inbox.answer(&request.id, &Answer { allow: Some(false), ..Default::default() }).unwrap();
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(25));
+            }
+            panic!("no budget question came");
+        });
+        let err =
+            e.call("assets_image_generate", json!({"prompt": "a crate", "save_as": "crate.png"}), crate::CallOptions::new(crate::Caller::Mcp)).err().unwrap();
+        answer.join().unwrap();
+        assert_eq!(err.code, ErrorCode::OverLimit);
+        assert!(managed.0.lock().unwrap().is_empty());
+        assert!(w.assets().is_empty());
+    }
+
+    #[test]
+    fn model_generation_still_requires_fal_key_before_making_managed_image() {
+        let (_d, w) = ws();
+        let managed = std::sync::Arc::new(Managed::default());
+        let e = managed_engine(&w, &managed, None, false);
+        let err =
+            e.call("assets_model_generate", json!({"prompt": "a crate", "save_as": "crate.glb"}), crate::CallOptions::new(crate::Caller::Mcp)).err().unwrap();
+        assert_eq!(err.code, ErrorCode::BadSettings);
+        assert!(managed.0.lock().unwrap().is_empty());
+        assert!(w.assets().is_empty());
+    }
+
+    #[test]
+    fn model_from_prompt_uses_managed_image_and_passes_its_data_uri_to_fal() {
+        let (_d, w) = ws();
+        let managed = std::sync::Arc::new(Managed::default());
+        let e = managed_engine(&w, &managed, Some(" "), true);
+        e.call("assets_model_generate", json!({"prompt": "a crate", "save_as": "crate.glb"}), crate::CallOptions::new(crate::Caller::Mcp)).unwrap();
+        assert_eq!(*managed.0.lock().unwrap(), vec!["managed-image"]);
+        assert_eq!(std::fs::read(w.app_dir().join("crate.png")).unwrap(), b"png");
+        assert_eq!(std::fs::read(w.app_dir().join("crate.glb")).unwrap(), b"glb");
+        assert_eq!(w.assets().len(), 2);
+        assert!((w.assets_spent() - 0.70).abs() < 1e-9);
     }
 
     #[test]
@@ -500,7 +765,7 @@ mod tests {
     #[test]
     fn the_budget_asks_before_going_over_and_remembers_always() {
         let (_d, mut w) = ws();
-        w.record_asset(AssetRecord { file: "a.glb".into(), kind: "model".into(), prompt: "x".into(), cost_usd: 4.80, at_ms: 0 }).unwrap();
+        w.record_asset(AssetRecord { file: "a.glb".into(), kind: "model".into(), prompt: "x".into(), cost_usd: 4.80, cost_unknown: false, at_ms: 0 }).unwrap();
         let inbox = Inbox::new(w.inbox_dir());
         let mut session = crate::testing::session();
         // Auto mode stops at the budget without asking.

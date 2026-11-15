@@ -66,6 +66,30 @@ jobs:
         run: |
           cargo test --locked -p craft-anything-engines --lib game::
           if ($LASTEXITCODE -ne 0) { throw 'Native game-engine regression failed' }
+      - name: Native image generation boundaries
+        shell: pwsh
+        run: |
+          cargo test --locked -p craft-anything-engine --lib asset_tools::tests
+          if ($LASTEXITCODE -ne 0) { throw 'Image provider permission or budget regression failed' }
+          cargo test --locked -p craft-anything-ai --lib managed_image::tests
+          if ($LASTEXITCODE -ne 0) { throw 'Native image decoding regression failed' }
+      - name: Upstream security regressions
+        shell: pwsh
+        run: |
+          cargo test --locked -p craft-anything-engine --lib -- interaction_tools::tests journal::tests settings::tests
+          if ($LASTEXITCODE -ne 0) { throw 'Project containment or private settings regression failed' }
+          cargo test --locked -p craft-anything-mcp --lib -- approval_tool_answers_in_the_permission_prompt_shape a_large_approval_keeps_its_decision
+          if ($LASTEXITCODE -ne 0) { throw 'MCP approval response regression failed' }
+      - name: Provider runtime regressions
+        shell: pwsh
+        working-directory: provider-runtime
+        run: |
+          bun install --frozen-lockfile
+          if ($LASTEXITCODE -ne 0) { throw 'Provider runtime dependency installation failed' }
+          bun test
+          if ($LASTEXITCODE -ne 0) { throw 'Provider runtime regression failed' }
+          bun run check
+          if ($LASTEXITCODE -ne 0) { throw 'Provider runtime type check failed' }
       - name: Provider account runtime
         shell: bash
         run: |
@@ -134,6 +158,15 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Engine setup authorization regression failed' }
           cargo test -p craft-anything-ui-egui --lib engine_ui::tests
           if ($LASTEXITCODE -ne 0) { throw 'Engine setup UI regression failed' }
+      - name: Unified workspace regressions
+        shell: pwsh
+        run: |
+          cargo test --locked -p craft-anything-ui-egui --lib -- provider_connect::tests settings_ui::tests::picture_model widgets::tests::help_is_hidden widgets::tests::inline_actions
+          if ($LASTEXITCODE -ne 0) { throw 'Model selection regression failed' }
+          cargo test --locked -p craft-anything-ui-egui --test smoke
+          if ($LASTEXITCODE -ne 0) { throw 'Unified workspace regression failed' }
+          cargo test --locked -p craft-anything-ui-egui --test exit_settings --test headless_parity
+          if ($LASTEXITCODE -ne 0) { throw 'Settings recovery or headless capability regression failed' }
       - name: Attach to the release
         if: inputs.publish
         shell: pwsh

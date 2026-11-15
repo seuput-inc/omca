@@ -48,6 +48,8 @@ try {
   if (!record(snapshot) || !Array.isArray(snapshot.providers) || !snapshot.providers.some(p => record(p) && p.id === 'openai') || snapshot.providers.some(p => !record(p) || !Array.isArray(p.accounts) || p.accounts.length !== 0)) throw new Error('Invalid empty account catalog');
   const apiOnly = snapshot.providers.find(provider => record(provider) && provider.id === 'abliteration');
   if (!record(apiOnly) || apiOnly.auth_kind !== 'api_key' || apiOnly.login_available !== false) throw new Error('API-key provider advertises a subscription login');
+  const disconnectedImages = await request({ command: 'image_capabilities' });
+  if (!Array.isArray(disconnectedImages) || disconnectedImages.length !== 0) throw new Error('Image capabilities imported an unconnected account');
   const models = await request({ command: 'models', provider_id: 'openai' });
   if (!Array.isArray(models) || !models.some(m => record(m) && m.provider_id === 'openai' && typeof m.id === 'string')) throw new Error('Missing model catalog');
   const firstModel = models.find(m => record(m) && m.provider_id === 'openai' && typeof m.id === 'string');
@@ -62,8 +64,12 @@ try {
   if (!record(account) || !Number.isSafeInteger(account.id)) throw new Error('Missing durable account ID');
   const selected = await request({ command: 'select_account', provider_id: 'openai', credential_id: account.id });
   if (!record(selected) || !Array.isArray(selected.providers) || !selected.providers.some(p => record(p) && p.id === 'openai' && Array.isArray(p.accounts) && p.accounts.some(a => record(a) && a.id === account.id && a.selected === true))) throw new Error('Account selection did not persist');
+  const connectedImages = await request({ command: 'image_capabilities' });
+  if (!Array.isArray(connectedImages) || connectedImages.length !== 1 || !record(connectedImages[0]) || connectedImages[0].provider_id !== 'openai' || JSON.stringify(connectedImages).includes(marker)) throw new Error('Connected image capability is missing or leaked a credential');
   const removed = await request({ command: 'remove_account', provider_id: 'openai', credential_id: account.id });
   if (!record(removed) || !Array.isArray(removed.providers) || removed.providers.some(p => record(p) && p.id === 'openai' && Array.isArray(p.accounts) && p.accounts.length !== 0)) throw new Error('Account removal did not persist');
+  const removedImages = await request({ command: 'image_capabilities' });
+  if (!Array.isArray(removedImages) || removedImages.length !== 0) throw new Error('Image capabilities retained a removed account');
   if (process.platform !== 'win32' && ((await stat(data)).mode & 0o077) !== 0) throw new Error('Account directory is not private');
   console.log(`Provider artifact smoke passed: ${snapshot.providers.length} providers; ${models.length} OpenAI models; isolated key save/select/remove; no credential leak or account import.`);
 } finally {

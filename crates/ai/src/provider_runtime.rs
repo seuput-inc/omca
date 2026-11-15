@@ -64,6 +64,27 @@ pub struct ModelInfo {
     pub reasoning: bool,
 }
 #[derive(Clone, Debug, Deserialize)]
+pub struct ImageCapability {
+    pub provider_id: String,
+    pub model_id: String,
+    pub name: String,
+    pub estimate_usd: Option<f64>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct GeneratedImage {
+    pub data_base64: String,
+    pub mime_type: String,
+    pub model: String,
+    pub cost_usd: Option<f64>,
+    pub estimate_usd: Option<f64>,
+    pub cost_is_estimate: bool,
+}
+
+fn valid_price(price: Option<f64>) -> bool {
+    price.is_none_or(|value| value.is_finite() && value >= 0.0)
+}
+#[derive(Clone, Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum LoginEvent {
     OpenUrl { url: String, instructions: Option<String> },
@@ -165,7 +186,7 @@ impl ProviderClient {
     ) -> Result<Value, ToolError> {
         request["id"] = json!("1");
         request["version"] = json!(1);
-        let (tx, rx) = mpsc::channel();
+        let (tx, rx) = mpsc::sync_channel(1);
         let cancel_process = cancelled.clone();
         let mut process = Process::new(self.helper()?)
             .env_clear()
@@ -255,6 +276,38 @@ impl ProviderClient {
         let value =
             self.run(json!({"command":"snapshot","refresh":refresh}), rx, Arc::new(|| false), |_| Err(failure("Unexpected provider runtime event.")))?;
         serde_json::from_value(value).map_err(|_| failure("Invalid provider snapshot."))
+    }
+    /// Read available managed image routes without generating an image.
+    pub fn image_capabilities(&self) -> Result<Vec<ImageCapability>, ToolError> {
+        self.image_capabilities_cancelled(Arc::new(|| false))
+    }
+
+    pub(crate) fn image_capabilities_cancelled(&self, cancelled: Arc<dyn Fn() -> bool + Send + Sync>) -> Result<Vec<ImageCapability>, ToolError> {
+        let (_tx, rx) = mpsc::channel();
+        let value = self.run(json!({"command":"image_capabilities"}), rx, cancelled, |_| Err(failure("Unexpected provider runtime event.")))?;
+        let capabilities: Vec<ImageCapability> = serde_json::from_value(value).map_err(|_| failure("Invalid image capability list."))?;
+        if capabilities.iter().any(|c| !valid_price(c.estimate_usd) || c.model_id.trim().is_empty() || c.name.trim().is_empty()) {
+            return Err(failure("Invalid image capability list."));
+        }
+        Ok(capabilities)
+    }
+
+    pub fn generate_image(
+        &self,
+        provider_id: &str,
+        prompt: &str,
+        shape: &str,
+        cancelled: Arc<dyn Fn() -> bool + Send + Sync>,
+    ) -> Result<GeneratedImage, ToolError> {
+        let (_tx, rx) = mpsc::channel();
+        let value = self.run(json!({"command":"generate_image","provider_id":provider_id,"prompt":prompt,"shape":shape}), rx, cancelled, |_| {
+            Err(failure("Unexpected provider runtime event."))
+        })?;
+        let image: GeneratedImage = serde_json::from_value(value).map_err(|_| failure("Invalid generated image."))?;
+        if image.data_base64.len() > 16 * 1024 * 1024 || !valid_price(image.cost_usd) || !valid_price(image.estimate_usd) || image.model.trim().is_empty() {
+            return Err(failure("Invalid generated image."));
+        }
+        Ok(image)
     }
     pub fn start(&self, action: Action) -> Task {
         let (event_tx, events) = mpsc::channel();
@@ -364,6 +417,69 @@ mod tests {
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700))?;
         let client = ProviderClient { data_dir: dir.path().join("providers"), helper_override: Some(path) };
         Ok((dir, client))
+    }
+
+    #[test]
+    fn image_capabilities_parse_without_generation() {
+        let (_dir, client) = client(
+            r#"read line
+case "$line" in *'"command":"image_capabilities"'*) ;; *) exit 1 ;; esac
+echo '{"id":"1","kind":"result","data":[{"provider_id":"openai-codex","model_id":"gpt-image-2","name":"GPT Image","estimate_usd":null}]}'"#,
+        )
+        .unwrap();
+        let caps = client.image_capabilities().unwrap();
+        assert_eq!(caps[0].provider_id, "openai-codex");
+        assert_eq!(caps[0].estimate_usd, None);
+    }
+
+    #[test]
+    fn image_result_rejects_negative_cost() {
+        let (_dir, client) = client(r#"read line
+echo '{"id":"1","kind":"result","data":{"data_base64":"AA==","mime_type":"image/png","model":"gpt-image-2","cost_usd":-1,"estimate_usd":null,"cost_is_estimate":false}}'"#).unwrap();
+        assert!(client.generate_image("openai", "a cube", "square", Arc::new(|| false)).is_err());
+    }
+
+    #[test]
+    fn builder_mcp_session_installs_and_refreshes_managed_image_registry() {
+        use craft_anything_engines::assets::{AssetProviders, Catalogue};
+        let (_dir, connected) = client(
+            r#"read line
+echo '{"id":"1","kind":"result","data":[{"provider_id":"openai","model_id":"gpt-image-2","name":"GPT Image","estimate_usd":null}]}'"#,
+        )
+        .unwrap();
+        let (_empty_dir, disconnected) = client(
+            r#"read line
+echo '{"id":"1","kind":"result","data":[]}'"#,
+        )
+        .unwrap();
+        let mut session = craft_anything_engine::testing::session();
+        assert!(crate::install_managed_image_providers(&mut session, connected, None, craft_anything_engine::CancelToken::default()));
+        let providers = session.ext.get::<AssetProviders>().unwrap();
+        assert!(providers.get("fal").is_some());
+        let model = providers.image_model(Catalogue::built_in(), None).unwrap();
+        assert_eq!(model.provider, "managed-openai");
+        assert!(providers.get(&model.provider).unwrap().cost_is_unknown());
+        assert!(!crate::install_managed_image_providers(&mut session, disconnected, None, craft_anything_engine::CancelToken::default()));
+        let providers = session.ext.get::<AssetProviders>().unwrap();
+        assert!(providers.get("managed-openai").is_none());
+        assert!(providers.get("fal").is_some());
+    }
+
+    #[test]
+    fn failed_discovery_never_automatically_selects_paid_fal() {
+        use craft_anything_engine::tools::asset_tools::AssetKeys;
+        use craft_anything_engines::assets::{AssetProviders, Catalogue};
+        let (_dir, failed) = client("read line; echo '{\"id\":\"1\",\"kind\":\"error\",\"error\":\"discovery failed\"}'").unwrap();
+        let (_empty_dir, recovered) = client("read line; echo '{\"id\":\"1\",\"kind\":\"result\",\"data\":[]}'").unwrap();
+        let mut session = craft_anything_engine::testing::session();
+        session.ext.insert(Arc::new(AssetKeys([("fal".into(), "fixture-key".into())].into())));
+        assert!(!crate::install_managed_image_providers(&mut session, failed, None, craft_anything_engine::CancelToken::default()));
+        let providers = session.ext.get::<AssetProviders>().unwrap();
+        assert!(providers.image_model(Catalogue::built_in(), None).is_err());
+        assert!(providers.image_model(Catalogue::built_in(), Some("")).is_err());
+        assert_eq!(providers.image_model(Catalogue::built_in(), Some("flux-schnell")).unwrap().provider, "fal");
+        assert!(!crate::install_managed_image_providers(&mut session, recovered, None, craft_anything_engine::CancelToken::default()));
+        assert_eq!(session.ext.get::<AssetProviders>().unwrap().image_model(Catalogue::built_in(), None).unwrap().provider, "fal");
     }
 
     #[test]

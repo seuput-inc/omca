@@ -150,11 +150,11 @@ impl TargetKind for GameKind {
         // Paid, so only when the person turned it on for this project and a key is set up.
         let generated = cx.assets && cx.ws.manifest.generate_assets;
         if cx.ws.manifest.own_project() {
-            return generated.then(|| assets_note(cx.ws, cx.image_model)).into_iter().collect();
+            return generated.then(|| asset_instructions(cx)).into_iter().collect();
         }
-        let mut s = vec![game_steps(cx.deep, cx.ghidra, matches!(target, TargetRef::Local { .. }), generated, cx.sees_pictures)];
+        let mut s = vec![game_steps(cx.deep, cx.ghidra, matches!(target, TargetRef::Local { .. }), generated, generated && cx.assets_3d, cx.sees_pictures)];
         if generated {
-            s.push(assets_note(cx.ws, cx.image_model));
+            s.push(asset_instructions(cx));
         }
         s.push(screenshot::contract(cx.sees_pictures));
         s.push(self_test::SELF_TEST_CONTRACT.to_string());
@@ -164,7 +164,7 @@ impl TargetKind for GameKind {
     /// The person may have turned generated assets on (or added a key) or off since the brief.
     fn follow_up_sections(&self, cx: &BriefCx) -> Vec<String> {
         if cx.assets && cx.ws.manifest.generate_assets {
-            vec![assets_note(cx.ws, cx.image_model)]
+            vec![asset_instructions(cx)]
         } else if !cx.ws.assets().is_empty() {
             vec![ASSETS_NOW_OFF.to_string()]
         } else {
@@ -182,6 +182,27 @@ impl TargetKind for GameKind {
         }
         v
     }
+}
+
+fn asset_instructions(cx: &BriefCx) -> String {
+    if cx.assets_3d && matches!(cx.image_pricing, ImagePricing::Catalogue) {
+        return assets_note(cx.ws, cx.image_model);
+    }
+    let image_cost = match cx.image_pricing {
+        ImagePricing::Known(cost) => format!("about {}", craft_anything_engines::assets::usd(cost)),
+        ImagePricing::Unknown => "unknown; provider quota or charges may apply and require approval".into(),
+        ImagePricing::Catalogue => "priced by the selected asset model".into(),
+    };
+    let model = if cx.assets_3d {
+        " fal.ai is configured, so assets_model_generate can also make 3D models; its tool reports the price before generation."
+    } else {
+        " No 3D generator is configured; make models with simple shapes instead."
+    };
+    format!(
+        "Realistic assets: assets_image_generate makes pictures for textures, skies, backgrounds and menu art. Picture cost is {image_cost}.{model} The project asset budget is ${:.2} (${:.2} known spending recorded). Save each asset inside app/. Every asset must be an original design.",
+        cx.ws.manifest.asset_budget_usd,
+        cx.ws.assets_spent()
+    )
 }
 
 /// Deep mode with the original's files: the build says which it used (`app/CREDITS.md`) and that

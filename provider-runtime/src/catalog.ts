@@ -13,7 +13,9 @@ export function supportsApiKey(id: string): boolean {
 }
 
 export function modelList(id: string) {
-  return getBundledModels(getOAuthCredentialProvider(id)).map(model => ({ provider_id: id, id: model.id, name: model.name, context_window: model.contextWindow, reasoning: model.reasoning }));
+  return getBundledModels(getOAuthCredentialProvider(id))
+    .filter(model => model.kind === undefined)
+    .map(model => ({ provider_id: id, id: model.id, name: model.name, context_window: model.contextWindow, reasoning: model.reasoning }));
 }
 
 export function canActOnAccount(rows: readonly StoredAuthCredential[], id: unknown, action: 'select_account' | 'remove_account'): boolean {

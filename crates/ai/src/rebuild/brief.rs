@@ -264,7 +264,7 @@ pub(super) const PRIVATE_USE_NOTE: &str = "This build contains the original game
 /// Clean room copies none of its files. `generated`: the person chose generated assets, so new
 /// models and pictures replace the original's art (in Deep mode its sounds, music, fonts,
 /// animations and maps are still used).
-pub(super) fn game_steps(deep: bool, ghidra: bool, has_target: bool, generated: bool, sees: bool) -> String {
+pub(super) fn game_steps(deep: bool, ghidra: bool, has_target: bool, generated: bool, generated_3d: bool, sees: bool) -> String {
     let mut s = String::from(
         "Making it play like the original:\n\
          - Start app/MECHANICS.md: every number that shapes how it plays. Movement (walk and run speed, acceleration, friction, air control, jump height, gravity, crouch), camera (field of view, mouse sensitivity), each weapon (damage, fire rate, magazine, reload time, spread, recoil, range), health and armour, respawn, scoring, modes, timers, and how computer players behave. Next to each value say where it came from (a file in the game's folder, a function address or evidence id) or mark it \"estimated\". Build from that sheet and keep it up to date.\n\
@@ -287,8 +287,10 @@ pub(super) fn game_steps(deep: bool, ghidra: bool, has_target: bool, generated: 
             "\n- We can't watch the original running on this computer yet, and you can't look at the pictures in reference/: when how it looks in play or how it behaves isn't in the evidence or the person's description, ask the person with core_person_ask.",
         ));
         if !deep {
-            let make = if generated {
+            let make = if generated_3d {
                 "Make the models, textures and UI pictures with assets_model_generate and assets_image_generate, and your own sounds, music, fonts and maps"
+            } else if generated {
+                "Make textures and UI pictures with assets_image_generate, and make your own models, sounds, music, fonts and maps"
             } else {
                 "Make your own simple versions"
             };
@@ -298,10 +300,15 @@ pub(super) fn game_steps(deep: bool, ghidra: bool, has_target: bool, generated: 
             ));
             return s;
         }
-        let (lead, bring) = if generated {
+        let (lead, bring) = if generated_3d {
             (
                 "- Models, textures and UI pictures: the person chose to generate new ones, so make them with assets_model_generate and assets_image_generate in the original's style instead of copying the original's.\n- Sounds, music, fonts, animations and maps: the person wants them 1:1 from the original game's own files",
                 "the sounds, music, fonts, animations and maps",
+            )
+        } else if generated {
+            (
+                "- Textures and UI pictures: the person chose to generate new ones, so make them with assets_image_generate in the original's style instead of copying the original's.\n- Models, sounds, music, fonts, animations and maps: the person wants them 1:1 from the original game's own files",
+                "the models, sounds, music, fonts, animations and maps",
             )
         } else {
             (
@@ -484,7 +491,17 @@ mod language_tests {
             let mut worker = super::super::tests::check_worker(&ws, false);
             worker.response_language = language.into();
             worker.attach(&ws).unwrap();
-            let cx = BriefCx { ws: &ws, deep: false, ghidra: false, editor: None, assets: false, image_model: None, sees_pictures: false };
+            let cx = BriefCx {
+                ws: &ws,
+                deep: false,
+                ghidra: false,
+                editor: None,
+                assets: false,
+                assets_3d: false,
+                image_pricing: kinds::ImagePricing::Catalogue,
+                image_model: None,
+                sees_pictures: false,
+            };
             let initial = brief(&AppKind, &cx, None);
             let messages = [
                 initial.clone(),

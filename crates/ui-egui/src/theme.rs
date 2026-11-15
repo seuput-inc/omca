@@ -324,13 +324,12 @@ pub fn semibold(size: f32) -> FontId {
 /// section's title, a card's or a list item's title.
 pub const TITLE: f32 = 24.0;
 pub const SECTION: f32 = 18.0;
-pub const CARD: f32 = 15.0;
-/// Text: reading text (Simple mode's body), secondary text, list rows, buttons and the
-/// Advanced body, fine print (paths, counts, captions), and the workbench's dense rows.
-pub const BODY: f32 = 14.0;
-pub const SMALL: f32 = 13.0;
-pub const CAPTION: f32 = 12.0;
-pub const TINY: f32 = 11.0;
+pub const CARD: f32 = 16.0;
+/// Shared reading, secondary, caption and dense-list sizes in logical pixels.
+pub const BODY: f32 = 15.0;
+pub const SMALL: f32 = 14.0;
+pub const CAPTION: f32 = 13.0;
+pub const TINY: f32 = 12.0;
 
 /// A heading: Pretendard SemiBold, at one of the heading sizes above.
 pub fn heading(text: impl Into<String>, size: f32) -> egui::RichText {
@@ -454,8 +453,8 @@ pub fn scroll_style() -> egui::style::ScrollStyle {
 /// How opaque a scroll bar's thumb is at rest (over the text colour).
 const SCROLL_THUMB_AT_REST: f32 = 0.5;
 
-/// Apply a theme. `roomy` = Beginner mode (bigger type, more air).
-pub fn apply(ctx: &egui::Context, kind: ThemeKind, roomy: bool) {
+/// Apply the workspace's shared typography and colour theme.
+pub fn apply(ctx: &egui::Context, kind: ThemeKind) {
     let t = Tokens::for_kind(kind);
     ctx.data_mut(|d| d.insert_temp(tokens_id(), t));
     ctx.set_theme(if t.dark() { egui::Theme::Dark } else { egui::Theme::Light });
@@ -502,9 +501,7 @@ pub fn apply(ctx: &egui::Context, kind: ThemeKind, roomy: bool) {
         wv.expansion = 0.0;
     }
     ctx.set_visuals(v);
-    // One body size per mode, from the scale: Simple mode reads at BODY, Advanced (a dense tool)
-    // at SMALL; everything else steps from there, so `ui.label` and `theme::BODY` never disagree.
-    let (body, small, mono_size, heading_size) = if roomy { (BODY, CAPTION, SMALL, SECTION) } else { (SMALL, TINY, CAPTION, CARD) };
+    let (body, small, mono_size, heading_size) = (BODY, CAPTION, SMALL, SECTION);
     ctx.global_style_mut(|s| {
         s.text_styles = [
             (TextStyle::Small, FontId::proportional(small)),
@@ -514,9 +511,9 @@ pub fn apply(ctx: &egui::Context, kind: ThemeKind, roomy: bool) {
             (TextStyle::Monospace, FontId::monospace(mono_size)),
         ]
         .into();
-        s.spacing.item_spacing = if roomy { egui::vec2(space::SM, space::S) } else { egui::vec2(space::SM, space::XS) };
-        s.spacing.button_padding = if roomy { egui::vec2(space::M, space::XS) } else { egui::vec2(space::SM, space::XS) };
-        s.spacing.interact_size = egui::vec2(size::CONTROL_SM, if roomy { size::CONTROL } else { size::CONTROL_SM });
+        s.spacing.item_spacing = egui::vec2(space::SM, space::S);
+        s.spacing.button_padding = egui::vec2(space::M, space::XS);
+        s.spacing.interact_size = egui::vec2(size::CONTROL_SM, size::CONTROL);
         s.spacing.menu_margin = egui::Margin::same(6);
         s.spacing.window_margin = egui::Margin::same(18);
         s.spacing.icon_width = 14.0;

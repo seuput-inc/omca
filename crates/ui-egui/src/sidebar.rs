@@ -1,6 +1,4 @@
-//! The left sidebar on the Simple screens: New project (make something, or just look inside
-//! something), pinned builds (`crate::pins`), your projects, and Settings. Chrome background, quiet section captions, rounded rows with a soft
-//! fill on the one that's open.
+//! Project navigation, pinned builds, inspection, and settings.
 
 use crate::i18n::tr;
 use crate::make::{ago, status_shown};
@@ -9,7 +7,7 @@ use crate::theme::{self, Tokens, size, space};
 use crate::{CraftApp, icons, widgets};
 use egui::{RichText, Sense, Ui, Vec2};
 
-pub const WIDTH: f32 = 248.0;
+pub const WIDTH: f32 = 224.0;
 /// Folded to icons.
 pub const FOLDED: f32 = 56.0;
 /// Below this window width the sidebar folds by itself, leaving the room to the screen.
@@ -55,8 +53,7 @@ pub fn show(app: &mut CraftApp, ui: &mut Ui) {
         if row(ui, "plus", "New project", None, home).clicked() {
             app.state.screen = Screen::Home;
         }
-        // Advanced mode's workbench sits beside the projects, so builds stay in sight.
-        if !app.beginner() && row(ui, "microscope", "Workbench", None, false).clicked() {
+        if row(ui, "microscope", "Inspect", None, app.state.screen == Screen::Workbench).clicked() {
             app.state.screen = Screen::Workbench;
             app.ensure_rail_loaded();
         }
@@ -87,7 +84,7 @@ pub fn show(app: &mut CraftApp, ui: &mut Ui) {
                 });
                 return;
             }
-            let open_root = (app.state.screen == Screen::Project).then(|| app.workspace.as_ref().map(|w| w.root.clone())).flatten();
+            let open_root = matches!(app.state.screen, Screen::Project | Screen::Workbench).then(|| app.workspace.as_ref().map(|w| w.root.clone())).flatten();
             let mut open = None;
             for ws in app.projects.clone().iter() {
                 let m = &ws.manifest;

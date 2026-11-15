@@ -5,7 +5,6 @@ use crate::i18n::tr;
 use crate::state::FirstRunStep;
 use crate::theme::{self, Tokens, size, space};
 use crate::{CraftApp, icons, widgets};
-use craft_anything_engine::Mode;
 use egui::{Align2, RichText, Ui, Vec2};
 
 pub fn show(app: &mut CraftApp, ui: &mut Ui) {
@@ -61,27 +60,13 @@ fn welcome(app: &mut CraftApp, ui: &mut Ui) {
     ui.add_space(space::S);
     ui.label(RichText::new(tr("Find out how any software works, then craft your own.")).size(theme::BODY).color(t.text_dim));
     ui.add_space(space::XXXL);
-    let w = 270.0;
-    ui.horizontal(|ui| {
-        ui.add_space(((ui.available_width() - (w * 2.0 + 16.0)) / 2.0).max(0.0));
-        if choice_card(ui, w, "graduation-cap", "I'm new to this", "Plain words, big buttons, and I'll explain everything.").clicked() {
-            app.settings.mode = Mode::Beginner;
-            app.state.first_run = FirstRunStep::Brain;
-        }
-        ui.add_space(space::L);
-        if choice_card(ui, w, "terminal", "Show me everything", "Every tool as well: a workbench with functions, bytes, references and evidence.").clicked() {
-            app.settings.mode = Mode::Experienced;
-            app.state.first_run = FirstRunStep::Brain;
-        }
-    });
+    if widgets::primary(ui, "Continue").clicked() {
+        app.state.first_run = FirstRunStep::Brain;
+    }
     ui.add_space(space::XL);
-    if widgets::link(ui, "Skip setup").on_hover_text(tr("Start with Simple mode; you can set up AI later in Settings.")).clicked() {
+    if widgets::link(ui, "Skip setup").on_hover_text(tr("You can set up AI later in Settings.")).clicked() {
         app.finish_first_run();
     }
-}
-
-fn choice_card(ui: &mut Ui, w: f32, icon: &str, title: &str, blurb: &str) -> egui::Response {
-    widgets::big_card(ui, Vec2::new(w, 200.0), icon, title, blurb, None)
 }
 
 fn header(ui: &mut Ui, title: &str, sub: &str) {

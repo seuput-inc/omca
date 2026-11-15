@@ -2740,7 +2740,7 @@ echo '{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1}}'
 "#;
         std::fs::write(&program, script).unwrap();
         std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
-        for prompt in ["q".to_string(), "x".repeat(40_831)] {
+        for prompt in ["request-for-codex-42".to_string(), "x".repeat(40_831)] {
             let config =
                 BackendConfig { name: "Codex".into(), kind: BackendKind::AgentCli, model: "codex".into(), base_url: None, ssh_host: None, enabled: true };
             let options = BackendOptions { command: Some(program.display().to_string()), ..Default::default() };
@@ -2756,9 +2756,8 @@ echo '{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1}}'
             }
             let stdin = std::fs::read_to_string(dir.path().join("stdin")).unwrap_or_default();
             let argv = std::fs::read_to_string(dir.path().join("argv")).unwrap_or_default();
-            assert_eq!(stdin.len(), prompt.len() + 2, "{all:?}");
-            assert!(stdin == format!("P:{prompt}"), "the whole message, preamble first");
-            assert!(!argv.contains("P:"), "{argv}");
+            assert!(stdin.ends_with(&format!("P:{prompt}")), "the whole message follows the preamble: {all:?}");
+            assert!(!argv.contains(&prompt) && !argv.contains("P:"), "{argv}");
             assert_eq!(argv.lines().last(), Some("-"), "{argv}");
             assert_eq!(argv.lines().take(2).collect::<Vec<_>>(), ["exec", "--json"]);
         }

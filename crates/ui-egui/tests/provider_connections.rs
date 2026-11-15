@@ -5,7 +5,10 @@
 use craft_anything_ai::{AiHub, KeyStore};
 use craft_anything_engine::Mode;
 use craft_anything_ui_egui::{CraftApp, demo, state::SettingsTab};
-use egui_kittest::{Harness, kittest::Queryable};
+use egui_kittest::{
+    Harness,
+    kittest::{NodeT, Queryable},
+};
 use std::os::unix::fs::PermissionsExt;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -14,7 +17,17 @@ use std::time::{Duration, Instant};
 fn wait(h: &mut Harness<'static, CraftApp>, done: impl Fn(&Harness<'static, CraftApp>) -> bool) {
     let start = Instant::now();
     while !done(h) {
-        assert!(start.elapsed() < Duration::from_secs(10), "provider workflow timed out: {:?}; {:?}", h.state().state.toasts, h.state().state.chat);
+        assert!(
+            start.elapsed() < Duration::from_secs(10),
+            "provider workflow timed out: settings_open={}, add_account={:?}, search_providers={}, loading_accounts={}, key_input_focused={:?}, save_key={:?}, backends={}",
+            h.state().state.settings_open,
+            h.query_by_role_and_label(egui::accesskit::Role::Button, "Add account").map(|node| !node.accesskit_node().is_disabled()),
+            h.query_by_label("Search providers").is_some(),
+            h.query_by_label("Loading accounts…").is_some(),
+            h.query_by_role_and_label(egui::accesskit::Role::PasswordInput, "Enter API key").map(|node| node.is_focused()),
+            h.query_by_role_and_label(egui::accesskit::Role::Button, "Save API key").map(|node| (node.accesskit_node().is_disabled(), node.rect())),
+            h.state().backends.len(),
+        );
         h.step();
         std::thread::sleep(Duration::from_millis(10));
     }
@@ -26,7 +39,7 @@ fn managed_key_login_selection_and_signout_use_the_runtime() {
     let helper = dir.path().join("provider-runtime");
     std::fs::write(&helper, r#"#!/bin/sh
 IFS= read -r request
-mkdir -p "$OMCA_PROVIDER_DATA_DIR"
+/bin/mkdir -p "$OMCA_PROVIDER_DATA_DIR"
 state="$OMCA_PROVIDER_DATA_DIR/test-account"
 models='[{"provider_id":"fake","id":"fake-model","name":"Fake model","reasoning":false},{"provider_id":"fake","id":"fake-next","name":"Fake next model","reasoning":false}]'
 empty='{"providers":[{"id":"fake","name":"Fake provider","login_available":true,"authenticated":false,"auth_kind":"api_key","accounts":[]}],"models":[]}'
@@ -45,7 +58,7 @@ case "$request" in
     echo '{"id":"1","kind":"login","event":{"type":"confirm","request_id":"risk","title":"Risk confirmation","message":"Approve only if you agree"}}'
     IFS= read -r answer
     case "$answer" in *'"accepted":true'*) : > "$state" ;; *) echo '{"id":"1","kind":"error","error":"declined"}'; exit ;; esac ;;
-  *'"command":"remove_account"'*) rm -f "$state" ;;
+  *'"command":"remove_account"'*) /bin/rm -f "$state" ;;
 esac
 if [ -f "$state" ]; then data="$account"; else data="$empty"; fi
 printf '{"id":"1","kind":"result","data":%s}\n' "$data"
@@ -54,8 +67,13 @@ printf '{"id":"1","kind":"result","data":%s}\n' "$data"
     if std::env::var_os("OMCA_ACCOUNT_TEST_CHILD").is_none() {
         let status = std::process::Command::new(std::env::current_exe().unwrap())
             .args(["--exact", "managed_key_login_selection_and_signout_use_the_runtime", "--nocapture"])
+            .env_clear()
             .env("OMCA_ACCOUNT_TEST_CHILD", "1")
             .env("OMCA_PROVIDER_RUNTIME", &helper)
+            .env("HOME", dir.path())
+            .env("TMPDIR", dir.path())
+            .env("PATH", "/usr/bin:/bin")
+            .env("LC_ALL", "C")
             .status()
             .unwrap();
         assert!(status.success(), "isolated account workflow failed");
@@ -73,7 +91,8 @@ printf '{"id":"1","kind":"result","data":%s}\n' "$data"
         app
     });
     h.run_steps(3);
-    h.get_by_label("Add account").click();
+    wait(&mut h, |h| h.query_by_role_and_label(egui::accesskit::Role::Button, "Add account").is_some_and(|node| !node.accesskit_node().is_disabled()));
+    h.get_by_role_and_label(egui::accesskit::Role::Button, "Add account").click();
     wait(&mut h, |h| h.query_by_label("Fake provider").is_some());
     h.get_by_label("Search providers").click();
     h.run_steps(2);
@@ -81,17 +100,34 @@ printf '{"id":"1","kind":"result","data":%s}\n' "$data"
     h.run_steps(2);
     h.get_by_label("API key").click();
     h.run_steps(2);
-    h.get_by_label("Enter API key").focus();
-    h.get_by_label("Enter API key").type_text("bad-key");
+    h.get_by_role_and_label(egui::accesskit::Role::PasswordInput, "Enter API key").focus();
     h.run_steps(2);
-    h.get_by_label("Save API key").click();
+    assert!(h.get_by_role_and_label(egui::accesskit::Role::PasswordInput, "Enter API key").is_focused());
+    h.get_by_role_and_label(egui::accesskit::Role::PasswordInput, "Enter API key").type_text("bad-key");
+    wait(&mut h, |h| h.query_by_role_and_label(egui::accesskit::Role::Button, "Save API key").is_some_and(|node| !node.accesskit_node().is_disabled()));
+    h.get_by_role_and_label(egui::accesskit::Role::Button, "Save API key").focus();
+    h.run_steps(2);
+    assert!(h.get_by_role_and_label(egui::accesskit::Role::Button, "Save API key").is_focused());
+    h.key_press(egui::Key::Space);
+    wait(&mut h, |h| h.query_by_label("Account connection needs attention").is_some());
+    h.get_by_label("Check the connection details below, then refresh accounts or add the account again.");
+    if h.query_by_label_contains("rejected").is_none() {
+        h.get_by_label("Error details").scroll_to_me();
+        h.run_steps(2);
+        h.get_by_label("Error details").click();
+    }
     wait(&mut h, |h| h.query_by_label_contains("rejected").is_some());
     assert!(h.state().backends.is_empty());
-    h.get_by_label("Enter API key").focus();
-    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
-    h.get_by_label("Enter API key").type_text("good-key");
+    h.get_by_role_and_label(egui::accesskit::Role::PasswordInput, "Enter API key").focus();
     h.run_steps(2);
-    h.get_by_label("Save API key").click();
+    assert!(h.get_by_role_and_label(egui::accesskit::Role::PasswordInput, "Enter API key").is_focused());
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+    h.get_by_role_and_label(egui::accesskit::Role::PasswordInput, "Enter API key").type_text("good-key");
+    h.run_steps(2);
+    h.get_by_role_and_label(egui::accesskit::Role::Button, "Save API key").focus();
+    h.run_steps(2);
+    assert!(h.get_by_role_and_label(egui::accesskit::Role::Button, "Save API key").is_focused());
+    h.key_press(egui::Key::Space);
     wait(&mut h, |h| h.query_by_label("Fake account").is_some());
     h.get_by_label_contains("Settings model").click();
     wait(&mut h, |h| h.query_by_label("Fake model").is_some());
@@ -132,11 +168,19 @@ printf '{"id":"1","kind":"result","data":%s}\n' "$data"
     h.run_steps(2);
     h.get_by_label("Confirm sign out").click();
     wait(&mut h, |h| h.query_by_label("Fake account").is_none());
-    h.get_by_label("Add account").click();
+    wait(&mut h, |h| h.query_by_role_and_label(egui::accesskit::Role::Button, "Add account").is_some_and(|node| !node.accesskit_node().is_disabled()));
+    h.get_by_role_and_label(egui::accesskit::Role::Button, "Add account").click();
     h.run_steps(2);
     h.get_by_label("Login").click();
     wait(&mut h, |h| h.query_by_label("Risk confirmation").is_some());
     h.get_by_label("Decline").click();
+    wait(&mut h, |h| h.query_by_label("Account connection needs attention").is_some());
+    h.get_by_label("Check the connection details below, then refresh accounts or add the account again.");
+    if h.query_by_label_contains("declined").is_none() {
+        h.get_by_label("Error details").scroll_to_me();
+        h.run_steps(2);
+        h.get_by_label("Error details").click();
+    }
     wait(&mut h, |h| h.query_by_label_contains("declined").is_some());
     assert!(h.query_by_label("Fake account").is_none());
     h.get_by_label("Login").click();

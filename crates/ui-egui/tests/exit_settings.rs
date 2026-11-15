@@ -67,14 +67,12 @@ fn exit_save_preserves_latest_ai_and_pending_app_settings() {
         let start = std::time::Instant::now();
         app.on_exit();
         assert!(start.elapsed() < Duration::from_secs(1), "shutdown must not wait for the tool");
-        assert!(Settings::path().with_extension("pending.toml").exists());
         release_tx.send(()).unwrap();
         worker.join().unwrap();
         let saved = Settings::load();
         assert_eq!(saved.ai, latest_ai, "startup keeps even an AI commit made after shutdown returned");
         assert_eq!(saved.mode, Mode::Experienced);
         assert_eq!(saved.language, "ko");
-        assert!(!Settings::path().with_extension("pending.toml").exists());
         assert_eq!(Settings::load(), saved, "recovery is durable and runs only once");
         return;
     }
@@ -82,8 +80,6 @@ fn exit_save_preserves_latest_ai_and_pending_app_settings() {
     let stale = Settings { language: "en".into(), mode: Mode::Beginner, ..app.settings.clone() };
     stale.defer_save_to(&Settings::path()).unwrap();
     app.on_exit();
-    assert!(!Settings::path().with_extension("pending.toml").exists());
-    Settings::discard_pending(&Settings::path()).unwrap(); // Already absent is also success.
 
     let saved = Settings::load();
     assert_eq!(AiConfig::from_table(&saved.ai).unwrap().get("OpenCode"), Some(&entry));

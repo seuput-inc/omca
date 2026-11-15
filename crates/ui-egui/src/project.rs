@@ -173,7 +173,7 @@ impl CraftApp {
             message,
             shown,
             shown_pictures: pictures,
-            beginner: self.beginner(),
+            beginner: self.settings.mode == craft_anything_engine::Mode::Beginner,
             kinds: self.kinds.clone(),
             max_rounds: build.max_rounds,
             good_enough: build.good_enough,
@@ -579,21 +579,26 @@ impl CraftApp {
 
     /// A screenshot thumbnail (the top of the page), read and decoded on a worker the first time.
     /// Kept for the open project only (see `tick`).
-    fn thumb(&mut self, ctx: &egui::Context, path: &Path) -> Thumb {
+    fn thumb(&mut self, ctx: &egui::Context, root: &Path, path: &Path) -> Thumb {
         if let Some(t) = self.thumbs.get(path) {
             return t.clone();
         }
         self.thumbs.insert(path.to_path_buf(), Thumb::Loading);
-        let (p, ctx) = (path.to_path_buf(), ctx.clone());
+        let (root, p, ctx) = (root.to_path_buf(), path.to_path_buf(), ctx.clone());
         self.jobs.spawn("Load a screenshot", false, move |_| {
             use craft_anything_engine::tools::web_common::{crop, decode_png, resize};
-            let image = std::fs::read(&p).ok().and_then(|b| decode_png(&b).ok()).map(|img| {
-                let top = crop(&img, img.width, img.height.min(THUMB_TOP));
-                // Shown at most half the feed wide: twice that is sharp on a high-density screen.
-                let top = if top.width > THUMB_WIDTH { resize(&top, THUMB_WIDTH, (top.height * THUMB_WIDTH / top.width).max(1)) } else { top };
-                let ci = egui::ColorImage::from_rgba_unmultiplied([top.width as usize, top.height as usize], &top.rgba);
-                ctx.load_texture(p.display().to_string(), ci, egui::TextureOptions::LINEAR)
-            });
+            let image = std::fs::canonicalize(&root)
+                .ok()
+                .and_then(|root| std::fs::canonicalize(&p).ok().filter(|file| file.starts_with(root)))
+                .and_then(|file| std::fs::read(file).ok())
+                .and_then(|b| decode_png(&b).ok())
+                .map(|img| {
+                    let top = crop(&img, img.width, img.height.min(THUMB_TOP));
+                    // Shown at most half the feed wide: twice that is sharp on a high-density screen.
+                    let top = if top.width > THUMB_WIDTH { resize(&top, THUMB_WIDTH, (top.height * THUMB_WIDTH / top.width).max(1)) } else { top };
+                    let ci = egui::ColorImage::from_rgba_unmultiplied([top.width as usize, top.height as usize], &top.rgba);
+                    ctx.load_texture(p.display().to_string(), ci, egui::TextureOptions::LINEAR)
+                });
             Ok(Done::Thumb { path: p, image })
         });
         Thumb::Loading
@@ -781,6 +786,7 @@ pub struct Facts {
     pub references: usize,
     /// Generated assets: how many, what they cost.
     pub assets: (usize, f64),
+    pub asset_cost_unknown: bool,
     /// The builder's open questions, most important first.
     pub open_questions: Vec<String>,
 }
@@ -796,6 +802,7 @@ impl Facts {
             references: ws.references().len(),
             // Summed from +0.0: an empty f64 `sum()` is -0.0, shown as "$-0.00".
             assets: (a.len(), a.iter().fold(0.0, |s, x| s + x.cost_usd)),
+            asset_cost_unknown: a.iter().any(|asset| asset.cost_unknown),
             open_questions: craft_anything_ai::rebuild::self_check::open_questions(ws).into_iter().map(|u| u.question).collect(),
         }
     }
@@ -883,6 +890,12 @@ fn asset_line(app: &mut CraftApp, ui: &mut Ui, ws: &Workspace) {
     let budget = ws.manifest.asset_budget_usd;
     let amount = trf("{n} · ${spent} of ${budget}", &[("n", &n.to_string()), ("spent", &format!("{spent:.2}")), ("budget", &format!("{budget:.2}"))]);
     ui.label(RichText::new(amount).font(theme::mono(theme::SMALL)).color(if spent >= budget { t.warning } else { t.text_dim }));
+    if app.facts.asset_cost_unknown {
+        ui.label(
+            RichText::new(tr("Some generated assets use subscription credits or have an unknown cost. The dollar total excludes those costs."))
+                .color(t.warning),
+        );
+    }
     let step = craft_anything_engines::assets::usd(app.asset_budget_step());
     if widgets::link(ui, &trf("Raise the budget by {amount}", &[("amount", &step)])).clicked() {
         app.raise_asset_budget();
@@ -903,8 +916,8 @@ fn current_step(app: &CraftApp, ws: &Workspace) -> Option<(Step, bool)> {
 // ---- screen -----------------------------------------------------------------------------------
 
 /// The side panel's width, and the room the screen needs to keep it beside the feed.
-const SIDE_W: f32 = 300.0;
-const SIDE_BESIDE: f32 = 860.0;
+const SIDE_W: f32 = 320.0;
+const SIDE_BESIDE: f32 = 820.0;
 
 pub fn show(app: &mut CraftApp, ui: &mut Ui) {
     let Some(ws) = app.workspace.clone() else {
@@ -914,20 +927,23 @@ pub fn show(app: &mut CraftApp, ui: &mut Ui) {
     // What its builds took and used, saved in the project: read once when it's first shown.
     app.usage.entry(ws.root.clone()).or_insert_with(|| crate::usage::ProjectClock::load(&ws.root));
     let t = Tokens::get(ui.ctx());
-    // The project's details sit on the right, where there's room for them beside a readable
-    // feed; in a narrow window they fold into the top of the feed instead.
+    // Keep the result beside the conversation when there is room.
     let beside = ui.available_width() >= SIDE_BESIDE;
     if beside {
-        egui::Panel::right("project-side")
-            .exact_size(SIDE_W)
-            .resizable(false)
-            .frame(widgets::pane(t.canvas, theme::pad_xy(space::L, space::XL)))
-            .show(ui, |ui| egui::ScrollArea::vertical().show(ui, |ui| side(app, ui, &ws)));
+        egui::Panel::right("project-side").exact_size(SIDE_W).resizable(false).frame(widgets::pane(t.canvas, theme::pad_xy(space::M, space::L))).show(
+            ui,
+            |ui| {
+                egui::ScrollArea::vertical().show(ui, |ui| {
+                    project_identity(app, ui, &ws);
+                    result_panel(app, ui, &ws);
+                })
+            },
+        );
     }
     let waiting = app.open_run().filter(|r| r.is_running()).map(RebuildRun::waiting).unwrap_or_default();
     egui::CentralPanel::default().frame(widgets::pane(t.canvas, chat::pane_margin())).show(ui, |ui| {
         let width = ui.available_width();
-        let max_w = width.min(720.0);
+        let max_w = width.min(840.0);
         let pad = ((width - max_w) / 2.0).max(0.0);
         // The feed gets what the prompt box leaves; the box grows with its text, so its height
         // is measured each frame and used on the next.
@@ -942,10 +958,11 @@ pub fn show(app: &mut CraftApp, ui: &mut Ui) {
                     ui.vertical(|ui| {
                         ui.set_width(max_w);
                         if !beside {
-                            egui::CollapsingHeader::new(RichText::new(tr("Project details")).font(theme::semibold(theme::BODY)))
+                            project_identity(app, ui, &ws);
+                            egui::CollapsingHeader::new(RichText::new(tr("Result and project details")).font(theme::semibold(theme::BODY)))
                                 .id_salt("project-details")
                                 .icon(widgets::disclosure_icon)
-                                .show(ui, |ui| side(app, ui, &ws));
+                                .show(ui, |ui| result_panel(app, ui, &ws));
                             ui.add_space(chat::MESSAGE_GAP);
                         }
                         feed(app, ui, &ws, &waiting);
@@ -962,6 +979,68 @@ pub fn show(app: &mut CraftApp, ui: &mut Ui) {
     });
 }
 
+fn project_identity(app: &CraftApp, ui: &mut Ui, ws: &Workspace) {
+    let t = Tokens::get(ui.ctx());
+    ui.horizontal(|ui| {
+        widgets::icon_tile(ui, make::project_icon(&ws.manifest), size::TILE);
+        ui.vertical(|ui| {
+            ui.add(egui::Label::new(theme::heading(&ws.manifest.name, theme::CARD)).truncate());
+            let (label, fg, bg) = make::status_shown(app, ws, &t);
+            widgets::pill(ui, label, fg, bg);
+        });
+    });
+    widgets::property_text(ui, "Project folder", &ws.root.display().to_string()).on_hover_text(ws.root.display().to_string());
+    ui.add_space(space::SM);
+}
+
+fn result_panel(app: &mut CraftApp, ui: &mut Ui, ws: &Workspace) {
+    ui.label(theme::heading(tr("Result"), theme::SECTION));
+    ui.add_space(space::SM);
+    if widgets::secondary(ui, Some("microscope"), "Inspect tools and evidence").clicked() {
+        app.state.screen = Screen::Workbench;
+    }
+    ui.add_space(space::SM);
+    if outcome(app).is_some() {
+        outcome_button(app, ui, ws, size::CONTROL, 12.5);
+        ui.add_space(space::SM);
+    }
+    let latest = app
+        .state
+        .feed
+        .iter()
+        .rev()
+        .find_map(|item| match item {
+            FeedItem::Check(check) => check.artifacts.iter().find(|path| {
+                path.components().all(|component| matches!(component, std::path::Component::Normal(_)))
+                    && path.extension().is_some_and(|extension| extension.eq_ignore_ascii_case("png"))
+            }),
+            _ => None,
+        })
+        .map(|path| ws.root.join(path));
+    if let Some(path) = latest {
+        match app.thumb(ui.ctx(), &ws.root, &path) {
+            Thumb::Ready(texture) => {
+                let width = ui.available_width();
+                let size = texture.size_vec2();
+                let height = (width * size.y / size.x.max(1.0)).min(320.0);
+                let uv = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, (height / (width * size.y / size.x.max(1.0))).min(1.0)));
+                let response = ui.add(egui::Image::new(&texture).uv(uv).fit_to_exact_size(Vec2::new(width, height)));
+                response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Image, true, tr("Latest result capture")));
+            }
+            Thumb::Loading => {
+                widgets::caption(ui, "Loading the latest capture…");
+            }
+            Thumb::Missing => {
+                widgets::caption(ui, "No capture is available for the latest check.");
+            }
+        }
+    } else {
+        widgets::caption(ui, "Results and captures appear here when available.");
+    }
+    ui.add_space(space::M);
+    egui::CollapsingHeader::new(tr("Project details")).id_salt("project-context").icon(widgets::disclosure_icon).show(ui, |ui| side(app, ui, ws));
+}
+
 /// The project's details beside the feed, as one panel of sections (Linear's property panel):
 /// what it is, where the build is, what it has used, what's still open, and what to do with it.
 fn side(app: &mut CraftApp, ui: &mut Ui, ws: &Workspace) {
@@ -969,19 +1048,10 @@ fn side(app: &mut CraftApp, ui: &mut Ui, ws: &Workspace) {
     let m = &ws.manifest;
     widgets::panel(&t).inner_margin(theme::pad(space::M)).show(ui, |ui| {
         ui.set_width(ui.available_width());
-        ui.horizontal(|ui| {
-            widgets::icon_tile(ui, make::project_icon(m), size::TILE);
-            ui.vertical(|ui| {
-                ui.add(egui::Label::new(theme::heading(&m.name, theme::CARD)).truncate());
-                let (label, fg, bg) = make::status_shown(app, ws, &t);
-                widgets::pill(ui, label, fg, bg);
-            });
-        });
-        ui.add_space(space::SM);
         if !matches!(m.target, TargetRef::None) {
             widgets::property_text(ui, "From", &m.target.label()).on_hover_text(m.target.label());
         }
-        if !m.stack.is_empty() && !app.beginner() {
+        if !m.stack.is_empty() {
             widgets::property_text(ui, "Built with", &m.stack);
         }
         widgets::section(ui, "Progress", false);
@@ -1027,7 +1097,7 @@ fn actions(app: &mut CraftApp, ui: &mut Ui, ws: &Workspace) {
             app.ask_pin(&ws.root);
         }
         crate::manage::buttons(app, ui, ws);
-        if !app.beginner() && widgets::icon_action(ui, "Open in the workbench").on_hover_text(tr("The full toolset, evidence and logs.")).clicked() {
+        if widgets::icon_action(ui, "Open in the workbench").on_hover_text(tr("The full toolset, evidence and logs.")).clicked() {
             app.state.screen = Screen::Workbench;
         }
     });
@@ -1421,12 +1491,11 @@ fn draw_items(
     manage_accounts: &mut bool,
 ) {
     let t = Tokens::get(ui.ctx());
-    let advanced = !app.beginner();
     // Questions about the build, among the items they were asked after.
     let mut next_asked = 0;
     let mut questions_up_to = |app: &mut CraftApp, ui: &mut Ui, end: usize| {
         while let Some(a) = app.asked.get_mut(&ws.root).and_then(|l| l.get_mut(next_asked)).filter(|a| a.after <= end) {
-            ui.push_id(("asked", next_asked), |ui| crate::just_ask::card(ui, a, !advanced));
+            ui.push_id(("asked", next_asked), |ui| crate::just_ask::card(ui, a, true));
             next_asked += 1;
         }
     };
@@ -1435,21 +1504,19 @@ fn draw_items(
         ui.push_id(i, |ui| match item {
             FeedItem::User(text) => chat::user_bubble(ui, text.text(), false),
             FeedItem::Step { step, text } => {
-                let shown = crate::i18n::tr_known(text).unwrap_or_else(|| tr(step.label()));
+                let shown = crate::i18n::tr_known(text).unwrap_or_else(|| if matches!(step, Step::Done) { text.clone() } else { tr(step.label()) });
                 ui.scope(|ui| chat::activity_row(ui, RichText::new(shown).color(t.text_dim).size(theme::SMALL))).response.on_hover_text(text);
             }
             FeedItem::Paused => chat::activity_row(ui, RichText::new(tr("Paused.")).color(t.text_dim).size(theme::SMALL)),
             FeedItem::Agent { text, streaming } => {
                 chat::answer_bubble(ui, false, text.trim(), |ui| {
-                    chat::rich_text(ui, text.trim(), !advanced);
+                    chat::rich_text(ui, text.trim(), true);
                     if *streaming {
                         widgets::thinking(ui);
                     }
                 });
             }
-            // Tool-by-tool work is for Advanced mode; Simple mode shows the plain-words story.
-            FeedItem::Work { tools, notes } if advanced => work(ui, tools, notes, advanced, &t),
-            FeedItem::Work { .. } => {}
+            FeedItem::Work { tools, notes } => work(ui, tools, notes, &t),
             // Pinned above the prompt box instead (see `checklist`).
             FeedItem::Plan(_) | FeedItem::PlanDismissed => {}
             FeedItem::Ask { request, answer } => {
@@ -1487,7 +1554,7 @@ fn draw_items(
     questions_up_to(app, ui, usize::MAX);
 }
 
-fn work(ui: &mut Ui, tools: &[(String, Option<bool>)], notes: &[String], advanced: bool, t: &Tokens) {
+fn work(ui: &mut Ui, tools: &[(String, Option<bool>)], notes: &[String], t: &Tokens) {
     let running = tools.iter().any(|(_, d)| d.is_none());
     let failed = tools.iter().filter(|(_, d)| *d == Some(false)).count();
     let title = if tools.is_empty() {
@@ -1499,32 +1566,29 @@ fn work(ui: &mut Ui, tools: &[(String, Option<bool>)], notes: &[String], advance
     // The notes in the body wrap inside the window (#666). A collapsing header's title never wraps
     // (egui lays it out on one line), so with no tool the title is the note's first line only.
     ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);
-    egui::CollapsingHeader::new(RichText::new(title).color(t.text_dim).size(theme::CAPTION)).default_open(advanced).icon(widgets::disclosure_icon).show(
-        ui,
-        |ui| {
-            for (tool, done) in tools {
-                ui.horizontal(|ui| {
-                    let (icon, col) = match done {
-                        None => ("loader", t.text_faint),
-                        Some(true) => ("check", t.success),
-                        Some(false) => ("triangle-alert", t.warning),
-                    };
-                    icons::show(ui, icon, size::ICON_XS, col);
-                    ui.label(RichText::new(tool.replace('_', " ")).font(theme::mono(theme::SMALL)).color(t.text_dim));
-                });
-            }
-            for n in notes {
-                ui.label(RichText::new(n).italics().color(t.text_faint).size(theme::CAPTION));
-            }
-            if failed > 0 {
-                ui.label(
-                    RichText::new(trf("{n} step(s) didn't work and were retried or skipped.", &[("n", &failed.to_string())]))
-                        .color(t.text_faint)
-                        .size(theme::CAPTION),
-                );
-            }
-        },
-    );
+    egui::CollapsingHeader::new(RichText::new(title).color(t.text_dim).size(theme::CAPTION)).icon(widgets::disclosure_icon).show(ui, |ui| {
+        for (tool, done) in tools {
+            ui.horizontal(|ui| {
+                let (icon, col) = match done {
+                    None => ("loader", t.text_faint),
+                    Some(true) => ("check", t.success),
+                    Some(false) => ("triangle-alert", t.warning),
+                };
+                icons::show(ui, icon, size::ICON_XS, col);
+                ui.label(RichText::new(tool.replace('_', " ")).font(theme::mono(theme::SMALL)).color(t.text_dim));
+            });
+        }
+        for n in notes {
+            ui.label(RichText::new(n).italics().color(t.text_faint).size(theme::CAPTION));
+        }
+        if failed > 0 {
+            ui.label(
+                RichText::new(trf("{n} step(s) didn't work and were retried or skipped.", &[("n", &failed.to_string())]))
+                    .color(t.text_faint)
+                    .size(theme::CAPTION),
+            );
+        }
+    });
 }
 
 /// A note's first line, cut to a length a header title can show on one line (#666).
@@ -1727,10 +1791,7 @@ fn check_card(app: &mut CraftApp, ui: &mut Ui, ctx: &egui::Context, ws: &Workspa
             };
             ui.label(RichText::new(title).font(theme::semibold(theme::BODY)));
         });
-        // The per-width measurements are for Advanced mode; a failed check's reason always shows.
-        if !app.beginner() || c.similarity.is_none() {
-            ui.add(egui::Label::new(RichText::new(&c.note).color(t.text_dim).size(theme::CAPTION)).wrap());
-        }
+        ui.add(egui::Label::new(RichText::new(&c.note).color(t.text_dim).size(theme::CAPTION)).wrap());
         claims_list(ui, c, &t);
         // Several pages: each one's likeness; clicking one shows its pictures below.
         let picked_id = egui::Id::new(("check-page", c.round));
@@ -1751,7 +1812,7 @@ fn check_card(app: &mut CraftApp, ui: &mut Ui, ctx: &egui::Context, ws: &Workspa
         let shot = format!("screenshot-{}.png", app.settings.build.widths().first().copied().unwrap_or(1440));
         let (orig, built) = (ws.capture_dir().join(dir).join(&shot), ws.checks_dir().join(format!("round-{}", c.round)).join(dir).join(&shot));
         // Both pictures, read on a worker; nothing when either isn't there.
-        let shots = c.similarity.map(|_| [("Original", app.thumb(ctx, &orig)), ("Your version", app.thumb(ctx, &built))]);
+        let shots = c.similarity.map(|_| [("Original", app.thumb(ctx, &ws.root, &orig)), ("Your version", app.thumb(ctx, &ws.root, &built))]);
         if let Some(shots) = shots.filter(|s| !s.iter().any(|(_, t)| matches!(t, Thumb::Missing))) {
             ui.add_space(space::SM);
             let w = (ui.available_width() - 12.0) / 2.0;

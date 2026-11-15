@@ -385,10 +385,19 @@ impl Drop for LinkGuard {
 
 #[cfg(unix)]
 #[test]
-fn a_store_under_a_dot_folder_reaches_ghidra_through_a_dot_free_link() {
+fn a_hidden_store_uses_a_dot_free_link_when_the_runtime_location_allows_it() {
     let home = tempfile::tempdir().unwrap();
     let store = home.path().join(".config").join("omca").join("engines");
     let (_link, root) = LinkGuard::root(&store);
+    let runtime = std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from);
+    let usable_runtime = runtime.as_ref().is_some_and(|path| path.is_absolute() && !has_dot_part(path));
+    if !usable_runtime && has_dot_part(&std::env::temp_dir()) {
+        assert_eq!(root, store, "an unusable runtime folder must keep the configured store");
+        assert_eq!(ghidra_root(&store).unwrap(), store);
+        std::fs::write(root.join("saved"), "x").unwrap();
+        assert_eq!(std::fs::read(store.join("saved")).unwrap(), b"x");
+        return;
+    }
     assert!(!has_dot_part(&root), "{}", root.display());
     assert!(!has_dot_part(&project_cache_dir(&root, &"ab".repeat(32), &"cd".repeat(32))));
     // It is the store: what Ghidra saves there is in the store, and the next run finds the same link.
@@ -399,6 +408,28 @@ fn a_store_under_a_dot_folder_reaches_ghidra_through_a_dot_free_link() {
     std::fs::remove_file(&root).unwrap();
     std::os::unix::fs::symlink(home.path(), &root).unwrap();
     assert_eq!(ghidra_root(&store).unwrap(), root);
+    assert_eq!(std::fs::read_link(&root).unwrap(), store);
+}
+
+#[cfg(unix)]
+#[test]
+fn a_store_link_keeps_data_and_replaces_a_stale_alias() {
+    use std::os::unix::fs::MetadataExt as _;
+    let home = tempfile::tempdir().unwrap();
+    let store = home.path().join(".config").join("engines");
+    make_private_dir(&store).unwrap();
+    let base = home.path().join("runtime");
+    let owner = std::fs::metadata(&store).unwrap().uid();
+    let root = store_link(&store, &base, owner).unwrap();
+    assert!(!has_dot_part(root.strip_prefix(&base).unwrap()));
+    let cache = project_cache_dir(&root, &"ab".repeat(32), &"cd".repeat(32));
+    assert!(!has_dot_part(cache.strip_prefix(&base).unwrap()));
+    std::fs::write(root.join("saved"), "x").unwrap();
+    assert_eq!(std::fs::read(store.join("saved")).unwrap(), b"x");
+    assert_eq!(store_link(&store, &base, owner).unwrap(), root);
+    std::fs::remove_file(&root).unwrap();
+    std::os::unix::fs::symlink(home.path(), &root).unwrap();
+    assert_eq!(store_link(&store, &base, owner).unwrap(), root);
     assert_eq!(std::fs::read_link(&root).unwrap(), store);
 }
 

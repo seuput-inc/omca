@@ -176,8 +176,6 @@ const SAFE_COMMANDS: &[&str] = &[
     "npx prettier",
     "node --version",
     "cargo build",
-    // Runs the builder's own game (e.g. `cargo run -- --screenshot …`).
-    "cargo run",
     "cargo check",
     "cargo test",
     "cargo fmt",
@@ -195,14 +193,8 @@ const SAFE_COMMANDS: &[&str] = &[
     "git diff",
     "git log",
     "git branch",
-    "ls",
-    "dir",
     "pwd",
     "mkdir",
-    "cat ",
-    "head ",
-    "tail ",
-    "wc ",
     "echo ",
 ];
 
@@ -306,7 +298,7 @@ fn engine_build(part: &str) -> bool {
     }
 }
 
-/// A program the builder made inside app/ (to try its build, e.g. `--screenshot`). It must exist
+/// A program the builder made inside app/, which needs approval before it runs. It must exist
 /// there: a bare name such as `rm` would otherwise look like `app/rm`.
 fn own_program(part: &str, app: &Path) -> bool {
     let (prog, _) = program_of(part);
@@ -316,8 +308,7 @@ fn own_program(part: &str, app: &Path) -> bool {
 }
 
 /// Decide a Bash command: every `&&`-joined part must be a safe build command, the game engine's
-/// own build, the builder's own program in app/, or a `cd` that stays inside the project, with
-/// no other shell control characters.
+/// own build, or a `cd` that stays inside the project, with no other shell control characters.
 fn decide_command(cmd: &str, app: &Path) -> Decision {
     let c = cmd.trim();
     let first = c.split_whitespace().next().unwrap_or_default();
@@ -342,7 +333,7 @@ fn decide_command(cmd: &str, app: &Path) -> Decision {
                 _ => return ask(),
             }
         }
-        if !(safe_command(part) || engine_build(part) || own_program(part, app)) {
+        if !(safe_command(part) || engine_build(part)) {
             return ask();
         }
     }
@@ -373,7 +364,16 @@ pub fn decide(ws: Option<&Workspace>, tool: &str, input: &Value) -> Decision {
     };
     let app = ws.map(Workspace::app_dir);
     match tool {
-        "Read" | "Glob" | "Grep" | "LS" | "TodoWrite" => Decision::Allow,
+        "Read" | "Glob" | "Grep" | "LS" => {
+            let target = match tool {
+                "Read" => s("file_path"),
+                "Glob" if s("path").is_empty() => s("pattern"),
+                _ => s("path"),
+            };
+            let contained = target.is_empty() || opened_at(ws, &target).iter().all(|p| p.as_deref().zip(ws).is_some_and(|(p, w)| really_inside(&w.root, p)));
+            if contained { Decision::Allow } else { Decision::Ask { title: format!("Read outside the project: {target}"), kind } }
+        }
+        "TodoWrite" => Decision::Allow,
         "Write" | "Edit" | "MultiEdit" | "NotebookEdit" => {
             let target = if tool == "NotebookEdit" { s("notebook_path") } else { s("file_path") };
             // app/ is what it builds; checks/ holds its own notes and screenshots. The inbox (where
@@ -477,7 +477,14 @@ fn outcome(ws: Option<&Workspace>, auto_mode: bool, tool: &str, input: &Value) -
     // that pushes and changes the system needs both allowed.
     let gets = |kind: ActionKind| {
         let chosen = ws.and_then(|w| w.manifest.approvals.get(&kind).copied());
-        (kind, chosen, chosen.unwrap_or_else(|| kind.default_in(auto_mode)))
+        let generated_run = tool == "Bash"
+            && kind == ActionKind::Commands
+            && input.get("command").and_then(Value::as_str).is_some_and(|cmd| {
+                cmd.split("&&")
+                    .map(str::trim)
+                    .any(|part| part == "cargo run" || part.starts_with("cargo run ") || ws.is_some_and(|w| own_program(part, &w.app_dir())))
+            });
+        (kind, chosen, chosen.unwrap_or_else(|| if generated_run { Approval::Ask } else { kind.default_in(auto_mode) }))
     };
     let kinds = kinds_of(ws, tool, input);
     let Some((kind, chosen, approval)) = kinds.iter().map(|k| gets(*k)).fold(None, |best: Option<(ActionKind, Option<Approval>, Approval)>, next| match best {
@@ -950,7 +957,10 @@ mod tests {
         assert!(refused("Bash", &json!({"command": format!("strings \"{shown}/Game.exe\" | head")})));
         assert!(refused("Bash", &json!({"command": format!("cat {}", shown.replace('\\', "/").to_uppercase())})), "any spelling of its folder");
         assert!(!refused("Read", &file(&w.app_dir())), "the project stays open");
-        assert_eq!(approve_with(inbox(), true, false, "Read", &file(&game), &|| false, &mut || {}).unwrap(), Ok(()), "Deep mode may read it");
+        assert!(
+            approve_with(inbox(), true, false, "Read", &file(&game), &|| false, &mut || {}).unwrap().is_err(),
+            "Deep mode no longer reads outside the workspace"
+        );
 
         let site =
             Workspace::create(&dir.path().join("projects"), "s", "Recreate this website", TargetRef::Website { url: "https://www.Example.com/pricing".into() })
@@ -961,6 +971,30 @@ mod tests {
         assert!(off_limits(Some(&site), "Bash", &json!({"command": "curl -s https://example.com/robots.txt"})).is_some());
         assert!(off_limits(Some(&site), "Bash", &json!({"command": "npm run build"})).is_none());
         assert_eq!((host_of("https://user@Shop.Test:8443/a"), host_of("not a url")), (Some("shop.test".into()), None));
+    }
+
+    #[test]
+    fn reads_inside_the_project_are_allowed_outside_asked() {
+        let (_d, w) = ws();
+        assert_eq!(decide(Some(&w), "Read", &json!({"file_path": "app/src/main.rs"})), Decision::Allow);
+        assert_eq!(decide(Some(&w), "Glob", &json!({"path": w.app_dir().display().to_string(), "pattern": "**/*.tsx"})), Decision::Allow);
+        assert_eq!(decide(Some(&w), "Grep", &json!({"pattern": "fn main"})), Decision::Allow);
+        for (tool, input) in [
+            ("Read", json!({"file_path": "/etc/passwd"})),
+            ("Read", json!({"file_path": "../../.ssh/id_rsa"})),
+            ("Glob", json!({"path": "/home"})),
+            ("Grep", json!({"path": "/etc"})),
+            ("LS", json!({"path": "/home"})),
+        ] {
+            assert!(matches!(decide(Some(&w), tool, &input), Decision::Ask { .. }), "{tool} {input}");
+        }
+        assert!(matches!(decide(None, "Read", &json!({"file_path": "/etc/passwd"})), Decision::Ask { .. }));
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(w.app_dir()).unwrap();
+        let link = w.app_dir().join("outside");
+        if link_dir(outside.path(), &link) {
+            assert!(matches!(decide(Some(&w), "Read", &json!({"file_path": link.join("secret").display().to_string()})), Decision::Ask { .. }));
+        }
     }
 
     #[test]
@@ -1001,7 +1035,7 @@ mod tests {
 
     #[test]
     fn dot_dot_after_a_link_is_applied_where_the_system_applies_it() {
-        let (_d, w) = ws();
+        let (dir, w) = ws();
         let outside = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(outside.path().join("t")).unwrap();
         std::fs::create_dir_all(w.app_dir()).unwrap();
@@ -1009,7 +1043,9 @@ mod tests {
             eprintln!("skipped: this system won't make links for tests");
             return;
         }
-        let raw = format!("{}/out/../x.txt", w.app_dir().display());
+        // Verbatim Windows paths reject `..`; exercise the ordinary path the OS normalizes.
+        let app = dir.path().join(w.root.file_name().unwrap()).join("app");
+        let raw = format!("{}/out/../x.txt", app.display());
         let opened = resolve_as_opened(Path::new("/"), &raw).unwrap();
         let write = json!({"file_path": raw});
         // Where the system really puts it is where the checks must look.
@@ -1022,7 +1058,7 @@ mod tests {
         } else {
             // Windows takes `..` off the text before it follows anything: app/x.txt.
             assert_eq!(opened, resolve(Path::new("/"), &raw).unwrap());
-            assert!(inside(&w.app_dir(), &opened));
+            assert_eq!(std::fs::read_to_string(w.app_dir().join("x.txt")).unwrap(), "x");
             assert_eq!(decide(Some(&w), "Write", &write), Decision::Allow);
         }
     }
@@ -1133,7 +1169,7 @@ mod tests {
     }
 
     #[test]
-    fn engine_builds_and_its_own_program_go_ahead() {
+    fn engine_builds_go_ahead_but_running_the_game_asks() {
         let (_d, w) = ws();
         let app = w.app_dir();
         for built in ["target/debug/game.exe", "Build/Game.exe"] {
@@ -1147,9 +1183,6 @@ mod tests {
             "\"C:\\Program Files\\Unity\\Hub\\Editor\\6000.0.23f1\\Editor\\Unity.exe\" -batchmode -quit -nographics -projectPath app -executeMethod CraftBuild.Build -logFile app/Logs/build.log",
             "\"D:/Engines/Godot_v4.4.1-stable_win64.exe\" --headless --path app --quit-after 120",
             "\"C:/Program Files/Epic Games/UE_5.4/Engine/Build/BatchFiles/RunUAT.bat\" BuildCookRun -project=app/Game.uproject",
-            "cargo run -- --screenshot shots/now.png",
-            "app/target/debug/game.exe --screenshot app/shots/now.png",
-            "cd app && ./Build/Game.exe --screenshot shots/now.png",
         ] {
             assert_eq!(decide_command(ok, &app), Decision::Allow, "{ok}");
         }
@@ -1160,9 +1193,22 @@ mod tests {
             "../elsewhere/tool.exe",
             "app/target/debug/game.exe > out.txt",
             "\"C:/x/build.bat\"",
+            "cargo run -- --screenshot shots/now.png",
+            "app/target/debug/game.exe --screenshot app/shots/now.png",
+            "cd app && ./Build/Game.exe --screenshot shots/now.png",
         ] {
             assert!(matches!(decide_command(ask, &app), Decision::Ask { .. }), "{ask}");
         }
+        for cmd in ["cargo run -- --screenshot shots/now.png", "app/target/debug/game.exe --screenshot app/shots/now.png"] {
+            assert!(matches!(outcome(Some(&w), true, "Bash", &json!({"command": cmd})), Outcome::Ask { .. }), "{cmd}");
+        }
+        assert!(matches!(outcome(None, true, "Bash", &json!({"command": "cargo run"})), Outcome::Ask { .. }));
+        let mut w = w;
+        let run = json!({"command": "cargo run"});
+        w.manifest.approvals.insert(ActionKind::Commands, Approval::Allow);
+        assert_eq!(outcome(Some(&w), true, "Bash", &run), Outcome::Allow);
+        w.manifest.approvals.insert(ActionKind::Commands, Approval::Refuse);
+        assert!(matches!(outcome(Some(&w), true, "Bash", &run), Outcome::Refuse(_)));
     }
 
     #[test]

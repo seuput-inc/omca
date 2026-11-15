@@ -51,16 +51,15 @@ pub fn show(app: &mut CraftApp, ui: &mut Ui) {
     // Keep the content width stable while the scrollbar animates in and out.
     let full_w = (ui.available_width() - ui.spacing().scroll.allocated_width()).max(0.0);
     egui::ScrollArea::vertical().scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::VisibleWhenNeeded).auto_shrink([false, false]).show(ui, |ui| {
-        let w = full_w.min(1000.0) - 48.0;
-        let pad = ((full_w - w) / 2.0).max(24.0);
-        // Tight enough that Start is in view at 900 px with every choice showing (tested).
-        ui.add_space(space::XL);
+        let w = full_w.min(1000.0) - 2.0 * space::L;
+        let pad = ((full_w - w) / 2.0).max(space::L);
+        ui.add_space(space::M);
         ui.horizontal(|ui| {
             ui.add_space(pad);
             ui.vertical(|ui| {
                 ui.set_width(w);
                 crate::make::hero(app, ui, w);
-                ui.add_space(space::XXXL);
+                ui.add_space(space::XL);
             });
         });
     });

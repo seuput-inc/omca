@@ -388,6 +388,8 @@ impl RebuildRun {
         };
         let r2 = running.clone();
         let key_store = hub.keys.clone();
+        let image_client = hub.provider_client();
+        let image_preferred = entry.options.provider_id.clone();
         std::thread::Builder::new()
             .name("rebuild".into())
             .spawn(move || {
@@ -398,6 +400,10 @@ impl RebuildRun {
                 let _here = self_check::BuildingHere::new(&ws.root);
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     ctx.load_asset_keys(&key_store);
+                    {
+                        let mut session = ctx.engine.session();
+                        ctx.assets |= crate::install_managed_image_providers(&mut session, image_client, image_preferred, ctx.stop.clone());
+                    }
                     ctx.run(&mut ws, entry, api, extractor, kept_without_api, &opts)
                 }));
                 let (ok, message, paused) = run_outcome(result, &mut ws);
@@ -955,8 +961,30 @@ impl Worker {
         let s = self.engine.session();
         let ghidra = s.settings.ghidra_launcher().is_some();
         let image_model = s.settings.assets.image_model.clone();
+        let providers = s.ext.get::<craft_anything_engines::assets::AssetProviders>().map(|p| p.as_ref().clone()).unwrap_or_default();
+        let assets_3d = s.ext.get::<craft_anything_engine::tools::asset_tools::AssetKeys>().is_some_and(|keys| keys.get("fal").is_some());
+        let selected_image = providers.image_model(craft_anything_engines::assets::Catalogue::built_in(), image_model.as_deref()).ok();
+        let image_provider = selected_image.as_ref().and_then(|model| providers.get(&model.provider));
+        let image_available = image_provider.as_ref().is_some_and(|p| {
+            !p.requires_key() || s.ext.get::<craft_anything_engine::tools::asset_tools::AssetKeys>().is_some_and(|keys| keys.get(p.id()).is_some())
+        });
+        let image_pricing = match selected_image.as_ref().zip(image_provider.as_ref()) {
+            Some((_, provider)) if !provider.requires_key() && provider.cost_is_unknown() => kinds::ImagePricing::Unknown,
+            Some((model, provider)) if !provider.requires_key() => kinds::ImagePricing::Known(model.cost(craft_anything_engines::assets::Shape::Square)),
+            _ => kinds::ImagePricing::Catalogue,
+        };
         drop(s);
-        let cx = BriefCx { ws, deep, ghidra, editor: self.editor.as_deref(), assets: self.assets, image_model: image_model.as_deref(), sees_pictures };
+        let cx = BriefCx {
+            ws,
+            deep,
+            ghidra,
+            editor: self.editor.as_deref(),
+            assets: image_available,
+            assets_3d,
+            image_pricing,
+            image_model: image_model.as_deref(),
+            sees_pictures,
+        };
         // The project's settings as they are now, for an agent that carries on its session.
         let now = || kind.follow_up_sections(&cx).iter().map(|s| format!("\n\n{s}")).collect::<String>() + &pictures_reminder(ws, sees_pictures);
         let mut prompt = match &opts.message {

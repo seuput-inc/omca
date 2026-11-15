@@ -1,8 +1,6 @@
-//! Generated game assets: pictures (textures, skies, concept art) and game-ready 3D models, made
-//! by a paid provider. Each provider is an [`AssetProvider`]; an [`AssetProviders`] registry holds
-//! them (built in: [`fal::Fal`]). The models and their prices come from the `assets.toml` table
-//! ([`Catalogue`]), so a cost is known before anything is spent, and every generation reports
-//! what it cost. Audio would be one more [`AssetRequest`] variant and table.
+//! Generated game assets: pictures (textures, skies, concept art) and game-ready 3D models.
+//! An [`AssetProviders`] registry holds the available [`AssetProvider`]s (built in: [`fal::Fal`]).
+//! Known prices are budgeted before generation; unknown costs require explicit approval.
 
 pub mod fal;
 
@@ -274,6 +272,18 @@ pub struct Generated {
 pub trait AssetProvider: Send + Sync {
     /// Stable id, named by the table's `provider` (`"fal"`).
     fn id(&self) -> &'static str;
+    /// Whether generation requires a separately configured asset-provider key.
+    fn requires_key(&self) -> bool {
+        true
+    }
+    /// The image model to use automatically when this provider has managed credentials.
+    fn preferred_image_model(&self) -> Option<ImageModel> {
+        None
+    }
+    /// Whether the provider consumes credits without a reliable dollar estimate.
+    fn cost_is_unknown(&self) -> bool {
+        false
+    }
     /// Shown to the person ("fal.ai").
     fn name(&self) -> &'static str;
     /// The environment variable the provider's own tools read its key from (`FAL_KEY`), used
@@ -291,12 +301,17 @@ pub trait AssetProvider: Send + Sync {
     }
     /// Make it with the person's `key`; the result carries what it actually cost.
     fn generate(&self, key: &str, req: &AssetRequest) -> Result<Generated, ToolError>;
+    /// Generate with the caller's cancellation signal when supported.
+    fn generate_cancelled(&self, key: &str, req: &AssetRequest, _cancelled: Arc<dyn Fn() -> bool + Send + Sync>) -> Result<Generated, ToolError> {
+        self.generate(key, req)
+    }
 }
 
 /// The asset providers a project can use.
 #[derive(Clone)]
 pub struct AssetProviders {
     providers: Vec<Arc<dyn AssetProvider>>,
+    image_discovery_error: Option<ToolError>,
 }
 
 impl std::fmt::Debug for AssetProviders {
@@ -314,7 +329,7 @@ impl Default for AssetProviders {
 impl AssetProviders {
     /// fal.ai.
     pub fn built_in() -> AssetProviders {
-        AssetProviders { providers: vec![Arc::new(fal::Fal::default())] }
+        AssetProviders { providers: vec![Arc::new(fal::Fal::default())], image_discovery_error: None }
     }
 
     /// Add a provider, or replace the one with the same id.
@@ -323,12 +338,50 @@ impl AssetProviders {
         self.providers.push(provider);
     }
 
+    /// Remove a provider by id without disturbing the rest of the registry.
+    pub fn remove(&mut self, id: &str) {
+        self.providers.retain(|provider| provider.id() != id);
+    }
+
+    /// Preserve managed image discovery failures so automatic selection fails closed.
+    pub fn set_image_discovery_error(&mut self, error: Option<ToolError>) {
+        self.image_discovery_error = error;
+    }
+
     pub fn get(&self, id: &str) -> Option<Arc<dyn AssetProvider>> {
         self.providers.iter().find(|p| p.id() == id).cloned()
     }
 
     pub fn ids(&self) -> Vec<&'static str> {
         self.providers.iter().map(|p| p.id()).collect()
+    }
+
+    /// Resolve an explicit catalogue model, or choose a managed model before the catalogue default.
+    pub fn image_model(&self, catalogue: &Catalogue, id: Option<&str>) -> Result<ImageModel, ToolError> {
+        if id.map(str::trim).is_some_and(|id| !id.is_empty()) {
+            return catalogue.image_model(id).cloned();
+        }
+        if let Some(error) = &self.image_discovery_error {
+            return Err(error.clone());
+        }
+        let preferred = self
+            .providers
+            .iter()
+            .filter(|provider| !provider.requires_key())
+            .filter_map(|provider| provider.preferred_image_model().map(|model| (provider, model)))
+            .min_by_key(|(provider, _)| provider.id());
+        if let Some((provider, model)) = preferred {
+            if model.provider != provider.id()
+                || model.id.trim().is_empty()
+                || model.endpoint.trim().is_empty()
+                || !price_ok(model.usd_per_image)
+                || !price_ok(model.usd_per_megapixel)
+            {
+                return Err(ToolError::new(ErrorCode::BadSettings, "The managed image provider has an invalid image model."));
+            }
+            return Ok(model);
+        }
+        catalogue.image_model(None).cloned()
     }
 
     /// The provider that makes `req`.

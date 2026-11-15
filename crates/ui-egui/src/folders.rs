@@ -71,7 +71,7 @@ pub fn make_line(app: &mut CraftApp, ui: &mut Ui) {
         }
         if !picked {
             ui.label(RichText::new("·").size(theme::SMALL).color(t.text_faint));
-            if widgets::link(ui, "Work on my project").clicked() {
+            if widgets::link(ui, "Choose a folder…").clicked() {
                 app.pick(Pick::ProjectFolder);
             }
         }

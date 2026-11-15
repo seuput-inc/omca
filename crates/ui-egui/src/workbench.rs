@@ -1,5 +1,4 @@
-//! Experienced mode: a dense workbench. Left rail lists, centre tabbed views, right inspector /
-//! evidence / unknowns, bottom agent console / jobs / log.
+//! Target inspection views, with optional tool and evidence drawers.
 
 use crate::evidence_ui::{self, json_tree, truncate};
 use crate::i18n::tr;
@@ -95,21 +94,44 @@ fn row_text(v: &Value) -> String {
 
 pub fn show(app: &mut CraftApp, ui: &mut Ui) {
     let t = Tokens::get(ui.ctx());
-    egui::Panel::left("wb-rail-icons")
-        .exact_size(48.0)
-        .resizable(false)
-        .frame(widgets::pane(t.chrome, theme::pad_xy(space::S, space::M)))
-        .show(ui, |ui| rail_icons(app, ui));
-    egui::Panel::left("wb-rail")
-        .default_size(290.0)
-        .size_range(200.0..=520.0)
-        .frame(widgets::pane(t.chrome, theme::pad_sides(space::XS, space::SM, space::M, space::SM)))
-        .show(ui, |ui| crate::guard_ui(ui, "rail", |ui| rail(app, ui)));
-    egui::Panel::right("wb-right")
-        .default_size(330.0)
-        .size_range(240.0..=560.0)
-        .frame(widgets::pane(t.chrome, theme::pad_sides(space::SM, space::M, space::M, space::SM)))
-        .show(ui, |ui| crate::guard_ui(ui, "inspector", |ui| right(app, ui)));
+    egui::Panel::top("inspect-actions").frame(widgets::pane(t.canvas, theme::pad_xy(space::M, space::S))).show(ui, |ui| {
+        ui.horizontal_wrapped(|ui| {
+            if app.workspace.is_some() && widgets::secondary(ui, None, "Project chat").clicked() {
+                app.state.screen = crate::state::Screen::Project;
+            }
+            if widgets::secondary(ui, None, "Ask").clicked() {
+                app.state.screen = crate::state::Screen::Ask;
+            }
+            if ui.selectable_label(app.state.inspect_tools_open, tr("Tools")).clicked() {
+                app.state.inspect_tools_open = !app.state.inspect_tools_open;
+                if app.state.inspect_tools_open {
+                    app.ensure_rail_loaded();
+                }
+            }
+            if ui.selectable_label(app.state.inspect_details_open, tr("Details and evidence")).clicked() {
+                app.state.inspect_details_open = !app.state.inspect_details_open;
+            }
+        });
+    });
+    if app.state.inspect_tools_open {
+        egui::Panel::left("wb-rail-icons")
+            .exact_size(48.0)
+            .resizable(false)
+            .frame(widgets::pane(t.chrome, theme::pad_xy(space::S, space::M)))
+            .show(ui, |ui| rail_icons(app, ui));
+        egui::Panel::left("wb-rail")
+            .default_size(290.0)
+            .size_range(200.0..=520.0)
+            .frame(widgets::pane(t.chrome, theme::pad_sides(space::XS, space::SM, space::M, space::SM)))
+            .show(ui, |ui| crate::guard_ui(ui, "rail", |ui| rail(app, ui)));
+    }
+    if app.state.inspect_details_open {
+        egui::Panel::right("wb-right")
+            .default_size(330.0)
+            .size_range(240.0..=560.0)
+            .frame(widgets::pane(t.chrome, theme::pad_sides(space::SM, space::M, space::M, space::SM)))
+            .show(ui, |ui| crate::guard_ui(ui, "inspector", |ui| right(app, ui)));
+    }
     let mut open = app.state.bottom_open;
     // A new id: nobody could resize the old one, so its saved sizes were never anyone's choice.
     egui::Panel::bottom("wb-console")

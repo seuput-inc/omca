@@ -63,6 +63,9 @@ pub(crate) fn asset_keys_scoped(store: &KeyStore, providers: &AssetProviders, ma
 /// thread; a tool passes the session it holds, because locking it again would wait forever.
 pub fn refresh_loaded(session: &mut craft_anything_engine::Session, store: &KeyStore) {
     if session.ext.get::<AssetKeys>().is_some() {
+        if let Some(context) = session.ext.get::<crate::managed_image::ManagedImageContext>() {
+            crate::managed_image::refresh(session, &context);
+        }
         let providers = session.ext.get::<AssetProviders>().map(|p| p.as_ref().clone()).unwrap_or_default();
         let managed_only = session.ext.get::<crate::ManagedExecution>().is_some();
         session.ext.insert(std::sync::Arc::new(asset_keys_scoped(store, &providers, managed_only)));
