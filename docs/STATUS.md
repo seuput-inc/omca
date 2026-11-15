@@ -61,8 +61,10 @@ The complete workspace and mandatory pre-push CI passed on 7ec386dfe8ea, includi
 compilation. Its macOS DMG/CLI payload, provider runtime, and signed update package passed.
 Windows run 43711542991 passed the actual portable helper and image boundaries, then exposed
 a regression fixture using a verbatim path with `..`, which Windows refuses to open.
-The fixture now uses the ordinary temporary-directory path and keeps the actual file-write
-and approval assertions. A fresh exact-source Windows run is required before publication.
+The fixture now uses the ordinary temporary-directory path. Run 43714705864 reached its next
+assertion, which compared ordinary and verbatim spellings lexically. That assertion now reads
+the actual file from the workspace path; file-location and approval behavior remain checked.
+A fresh exact-source Windows run is required before publication.
 
 Upstream security backports selected for this release:
 [`98b22ac`](https://github.com/storytold/craft-anything/commit/98b22ac3e2ab2b14543611c57820b1d345bc7877)

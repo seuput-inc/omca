@@ -1058,7 +1058,7 @@ mod tests {
         } else {
             // Windows takes `..` off the text before it follows anything: app/x.txt.
             assert_eq!(opened, resolve(Path::new("/"), &raw).unwrap());
-            assert!(inside(&w.app_dir(), &opened));
+            assert_eq!(std::fs::read_to_string(w.app_dir().join("x.txt")).unwrap(), "x");
             assert_eq!(decide(Some(&w), "Write", &write), Decision::Allow);
         }
     }
