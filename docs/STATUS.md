@@ -6,7 +6,7 @@ workspace clippy, layers, fmt and the secret scan of all history were clean. Chi
 
 ## What works, and how it was checked
 
-### OMCA 0.4.7 builder execution approvals (candidate)
+### OMCA 0.4.7 builder execution approvals
 
 User-started API builders approve engine execution/device-effect consent automatically across
 toolsets. Previously only Build tools were approved; a Runtime request such as
@@ -33,7 +33,28 @@ No original program, paid provider request, account operation, or licence accept
 The verifier reproduced the parent rejection and forced a fresh head compile before
 observing the passing Worker regression. It also ran 29 command-policy regressions
 and the Unity legal-consent boundary. The mandatory pre-push gate passed on the PR
-head. Final 0.4.7 package verification and publication are pending.
+head. Candidate de5d371146de passed the complete mandatory CI before packaging.
+
+[OMCA 0.4.7](https://github.com/seuput-inc/omca/releases/tag/v0.4.7) is published
+as latest with all 12 assets from that candidate. macOS packaged CLI 0.4.7, provider
+runtime isolation, DMG/CLI signature integrity, and the signed helper's actual
+0.4.7-to-0.4.8 replacement/restart passed with synthetic credentials preserved.
+The update ZIP's pinned Ed25519 signature, payload size/hash, and internal executable
+hash matched.
+
+[Windows run 43738557409](https://github.com/seuput-inc/omca/actions/runs/43738557409)
+passed every native gate, including both builder-consent tests, installed MSI and
+portable CLI 0.4.7, provider isolation, signed helper restart, and the UI checks.
+An independent verifier read the actual checkout and downloaded exactly six files.
+Both manifest signatures, identities, payload sizes/hashes, and the portable
+executable hash matched the pinned release contract.
+
+Before publication, all 12 uploaded asset digests matched local files. After
+publication, all three public update payloads were downloaded and their signed
+identities, signatures, sizes, and SHA-256 were verified. macOS remains ad-hoc
+signed/not notarized; Windows remains Authenticode unsigned. Physical Windows
+dragging, original-app capture, paid provider calls, and full Unity legal actions
+were not exercised by this release verification.
 
 ### OMCA 0.4.6 unified workspace and native images
 

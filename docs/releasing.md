@@ -72,8 +72,10 @@ before Windows finishes, so it is not the two-platform verification gate.
 1. Confirm both platform verdicts cover the frozen candidate and `main`.
 2. Generate `SHA256SUMS.txt` for the eleven package and update-metadata files.
 3. Tag the verified commit as `v<version>` and push the tag with hooks enabled.
-4. Create the GitHub release with all eleven files and `SHA256SUMS.txt`. Publish it
-   as latest only after verification. A draft is not a completed deployment.
+4. Create a draft GitHub release with all eleven files and `SHA256SUMS.txt`.
+   Read the draft by its numeric release ID and compare every uploaded asset digest.
+   The tag endpoint may not resolve an unpublished draft. Publish it as latest
+   only after those checks. A draft is not a completed deployment.
 5. Re-read the published release. Check the tag, latest status, all twelve asset
    names and digests, and public update metadata and payload downloads.
 6. Record the release URL, source commit, Windows run, verification results, and
