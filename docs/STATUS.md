@@ -42,6 +42,13 @@ The complete pre-push gate must pass before publication.
 The Ghidra alias fixture no longer assumes a dot-free system temporary directory. It tests the
 existing fallback and actual link/write/replacement behavior separately inside isolated storage.
 All four cache-path checks, engine Clippy, and formatting passed; runtime path policy is unchanged.
+Shutdown persistence now keeps a busy session's app edits as field patches instead of racing a
+late writer. Successful transactions merge legacy snapshots before consuming them and journal
+their new deltas across interrupted cleanup. Recovery journals use private atomic writes.
+All 28 settings regressions passed, including legacy migration, cleanup interruption, and
+owner-only journals. The real exit-save child scenario and scoped UI exit regression passed.
+These checks use deterministic barriers and injected commit interruption, not a TLC proof or
+physical power-loss test.
 
 Upstream security backports selected for this release:
 [`98b22ac`](https://github.com/storytold/craft-anything/commit/98b22ac3e2ab2b14543611c57820b1d345bc7877)

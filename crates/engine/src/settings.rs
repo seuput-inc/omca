@@ -245,7 +245,7 @@ impl SettingsPatch {
         pending.merge(self.clone());
         let text =
             serde_json::to_vec(&DeferredSettingsEdits { version: 1, patch: pending }).map_err(|e| ToolError::new(ErrorCode::BadSettings, e.to_string()))?;
-        crate::project::write_atomic(&edits_path, &text)
+        craft_anything_platform::write_atomic_private(&edits_path, &text)
     }
 
     fn read_deferred(path: &Path) -> Result<Option<Self>, ToolError> {
@@ -575,27 +575,35 @@ impl Settings {
         }
     }
 
-    /// Recover a deferred snapshot only when both files are readable and supported. Leave the
-    /// sidecar intact on failure, and remove it only after the merged settings are saved.
-    fn recover_pending(path: &Path) -> Result<(), ToolError> {
+    fn pending_snapshot(path: &Path) -> Result<Option<Self>, ToolError> {
         let pending_path = path.with_extension("pending.toml");
         let text = match std::fs::read_to_string(&pending_path) {
             Ok(text) => text,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
             Err(e) => return Err(ToolError::io(pending_path.display(), e)),
         };
+        let pending = read_settings(&text).map_err(|e| ToolError::new(ErrorCode::BadSettings, e))?;
+        if pending.version > SETTINGS_VERSION {
+            return Err(ToolError::new(ErrorCode::BadSettings, "Update OMCA to recover settings saved by a newer version."));
+        }
+        Ok(Some(pending))
+    }
+
+    /// Recover a deferred snapshot only after merging the latest committed AI settings.
+    fn recover_pending(path: &Path) -> Result<(), ToolError> {
+        let _guard = SETTINGS_WRITE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(mut pending) = Self::pending_snapshot(path)? else { return Ok(()) };
         let bad_settings = |e: String| ToolError::new(ErrorCode::BadSettings, e);
-        let mut pending = read_settings(&text).map_err(bad_settings)?;
         let current = match std::fs::read_to_string(path) {
             Ok(text) => read_settings(&text).map_err(bad_settings)?,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Settings::default(),
             Err(e) => return Err(ToolError::io(path.display(), e)),
         };
-        if current.version > SETTINGS_VERSION || pending.version > SETTINGS_VERSION {
+        if current.version > SETTINGS_VERSION {
             return Err(ToolError::new(ErrorCode::BadSettings, "Update OMCA to recover settings saved by a newer version."));
         }
         pending.ai = current.ai;
-        pending.save_to(path)?;
+        pending.save_to_unlocked(path)?;
         Self::discard_pending(path)
     }
 
@@ -630,6 +638,12 @@ impl Settings {
         if current.version > SETTINGS_VERSION {
             return Err(ToolError::new(ErrorCode::BadSettings, "Settings were written by a newer OMCA. Nothing was written."));
         }
+        let snapshot = Self::pending_snapshot(path)?;
+        let has_snapshot = snapshot.is_some();
+        if let Some(mut snapshot) = snapshot {
+            snapshot.ai = current.ai;
+            current = snapshot;
+        }
         current.engines.only_configured = self.engines.only_configured;
         current.not_loaded.clone_from(&self.not_loaded);
         let edits_path = path.with_extension("edits.json");
@@ -637,21 +651,23 @@ impl Settings {
         if let Some(patch) = &pending {
             patch.apply(&mut current)?;
         }
-        let before_update = pending.as_ref().map(|_| current.clone());
+        let journal_edits = pending.is_some() || has_snapshot;
+        let before_update = journal_edits.then(|| current.clone());
         update(&mut current)?;
-        let has_pending = pending.is_some();
-        if let (Some(mut replay), Some(before)) = (pending, before_update) {
+        if let Some(before) = before_update {
+            let mut replay = pending.unwrap_or_default();
             replay.merge(SettingsPatch::between(&before, &current)?);
             let bytes =
                 serde_json::to_vec(&DeferredSettingsEdits { version: 1, patch: replay }).map_err(|e| ToolError::new(ErrorCode::BadSettings, e.to_string()))?;
-            crate::project::write_atomic(&edits_path, &bytes)?;
+            craft_anything_platform::write_atomic_private(&edits_path, &bytes)?;
         }
         current.save_to_unlocked(path)?;
-        if has_pending {
-            #[cfg(test)]
-            if tests::FAIL_AFTER_SETTINGS_COMMIT.with(|fail| fail.replace(false)) {
-                return Err(ToolError::io(path.display(), std::io::Error::other("Injected interruption after settings commit")));
-            }
+        #[cfg(test)]
+        if journal_edits && tests::FAIL_AFTER_SETTINGS_COMMIT.with(|fail| fail.replace(false)) {
+            return Err(ToolError::io(path.display(), std::io::Error::other("Injected interruption after settings commit")));
+        }
+        Self::discard_pending(path)?;
+        if journal_edits {
             std::fs::remove_file(&edits_path).map_err(|e| ToolError::io(edits_path.display(), e))?;
         }
         Ok(current)
@@ -775,6 +791,54 @@ auto_mode = true
 
     use super::*;
 
+    #[test]
+    fn unrelated_updates_preserve_and_consume_legacy_pending_edits() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let original = Settings { language: "en".into(), ..Settings::default() };
+        original.save_to(&path).unwrap();
+        let pending = Settings { language: "ko".into(), ..original.clone() };
+        pending.defer_save_to(&path).unwrap();
+        let next = original
+            .update_to(&path, |settings| {
+                settings.theme = "studio-light".into();
+                Ok(())
+            })
+            .unwrap();
+        let saved = Settings::load_from(&path);
+        assert_eq!(saved.language, "ko");
+        assert_eq!(saved.theme, "studio-light");
+        next.update_to(&path, |settings| {
+            settings.language = "en".into();
+            Ok(())
+        })
+        .unwrap();
+        Settings::recover_pending(&path).unwrap();
+        assert_eq!(Settings::load_from(&path).language, "en", "consumed edits cannot undo a newer choice");
+    }
+
+    #[test]
+    fn interrupted_legacy_snapshot_cleanup_keeps_the_newer_update() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let original = Settings { language: "en".into(), ..Settings::default() };
+        original.save_to(&path).unwrap();
+        Settings { language: "ko".into(), ..original.clone() }.defer_save_to(&path).unwrap();
+        FAIL_AFTER_SETTINGS_COMMIT.with(|fail| fail.set(true));
+        assert!(
+            original
+                .update_to(&path, |settings| {
+                    settings.theme = "studio-light".into();
+                    Ok(())
+                })
+                .is_err()
+        );
+        let recovered = Settings::load_waiting(&path, &[], &mut |p| std::fs::read(p));
+        assert_eq!(recovered.language, "ko");
+        assert_eq!(recovered.theme, "studio-light", "legacy recovery cannot undo the committed update");
+        assert_eq!(Settings::load_waiting(&path, &[], &mut |p| std::fs::read(p)), recovered);
+    }
+
     thread_local! {
         pub(super) static FAIL_AFTER_SETTINGS_COMMIT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     }
@@ -799,6 +863,35 @@ auto_mode = true
         let nested = root.path().join("new-config").join("config.toml");
         Settings::default().save_to(&nested).unwrap();
         assert_eq!(std::fs::metadata(nested.parent().unwrap()).unwrap().permissions().mode() & 0o777, 0o700);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn deferred_settings_and_recovery_journals_are_owner_only() {
+        use std::os::unix::fs::PermissionsExt as _;
+        for legacy in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("config.toml");
+            let original = Settings::default();
+            original.save_to(&path).unwrap();
+            let pending = Settings { language: "ko".into(), ..original.clone() };
+            if legacy {
+                pending.defer_save_to(&path).unwrap();
+                FAIL_AFTER_SETTINGS_COMMIT.with(|fail| fail.set(true));
+                assert!(
+                    original
+                        .update_to(&path, |settings| {
+                            settings.theme = "studio-light".into();
+                            Ok(())
+                        })
+                        .is_err()
+                );
+            } else {
+                SettingsPatch::between(&original, &pending).unwrap().defer_to(&path).unwrap();
+            }
+            let journal = path.with_extension("edits.json");
+            assert_eq!(std::fs::metadata(journal).unwrap().permissions().mode() & 0o777, 0o600);
+        }
     }
 
     #[test]

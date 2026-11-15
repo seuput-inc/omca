@@ -1982,12 +1982,20 @@ impl eframe::App for CraftApp {
                 Ok(changes) => patch.merge(changes),
                 Err(e) => log::error!("Couldn't prepare settings edits on exit: {}", e.message),
             }
-            if !patch.is_empty()
-                && let Err(e) = self.settings.update_to(&self.settings_path, |current| patch.apply(current))
-            {
-                log::error!("Couldn't save settings edits on exit: {}", e.message);
-                if let Err(e) = patch.defer_to(&self.settings_path) {
-                    log::error!("Couldn't keep pending settings edits: {}", e.message);
+            if !patch.is_empty() {
+                let saved = if let Some(mut session) = self.engine.try_session() {
+                    session.settings.update_to(&self.settings_path, |current| patch.apply(current)).map(|next| {
+                        session.settings = next.clone();
+                        self.settings = next;
+                    })
+                } else {
+                    patch.defer_to(&self.settings_path)
+                };
+                if let Err(e) = saved {
+                    log::error!("Couldn't save settings edits on exit: {}", e.message);
+                    if let Err(e) = patch.defer_to(&self.settings_path) {
+                        log::error!("Couldn't keep pending settings edits: {}", e.message);
+                    }
                 }
             }
         }
