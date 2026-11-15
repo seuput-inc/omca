@@ -658,6 +658,10 @@ impl Settings {
     }
 
     fn save_to_unlocked(&self, path: &Path) -> Result<(), ToolError> {
+        self.save_to_unlocked_with_dir_permissions(path, craft_anything_platform::fs::set_private_dir)
+    }
+
+    fn save_to_unlocked_with_dir_permissions(&self, path: &Path, set_private_dir: impl FnOnce(&Path) -> Result<(), ToolError>) -> Result<(), ToolError> {
         if let Some(why) = &self.not_loaded {
             return Err(ToolError::new(ErrorCode::BadSettings, format!("Settings weren't saved: {why}, so these are defaults standing in for it."))
                 .with_remediation("Nothing was written. Make that file readable or move it aside, then start OMCA again."));
@@ -670,7 +674,11 @@ impl Settings {
             .with_remediation("Update OMCA to change settings, or move config.toml aside to start fresh. Nothing was written."));
         }
         let text = toml::to_string_pretty(self).map_err(|e| ToolError::new(ErrorCode::BadSettings, e.to_string()))?;
-        crate::project::write_atomic(path, text.as_bytes())
+        if let Some(dir) = path.parent().filter(|dir| !dir.as_os_str().is_empty() && *dir != Path::new(".")) {
+            std::fs::create_dir_all(dir).map_err(|e| ToolError::io(dir.display(), e))?;
+            set_private_dir(dir)?;
+        }
+        craft_anything_platform::write_atomic_private(path, text.as_bytes())
     }
 
     pub fn save(&self) -> Result<(), ToolError> {
@@ -769,6 +777,59 @@ auto_mode = true
 
     thread_local! {
         pub(super) static FAIL_AFTER_SETTINGS_COMMIT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn config_is_saved_owner_only() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let root = tempfile::tempdir().unwrap();
+        let parent = root.path().join("selected-config");
+        let unrelated = root.path().join("unrelated");
+        std::fs::create_dir(&parent).unwrap();
+        std::fs::create_dir(&unrelated).unwrap();
+        for path in [root.path(), parent.as_path(), unrelated.as_path()] {
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let path = parent.join("config.toml");
+        Settings::default().save_to(&path).unwrap();
+        for (path, mode) in [(root.path(), 0o755), (parent.as_path(), 0o700), (unrelated.as_path(), 0o755), (path.as_path(), 0o600)] {
+            assert_eq!(std::fs::metadata(path).unwrap().permissions().mode() & 0o777, mode);
+        }
+        let nested = root.path().join("new-config").join("config.toml");
+        Settings::default().save_to(&nested).unwrap();
+        assert_eq!(std::fs::metadata(nested.parent().unwrap()).unwrap().permissions().mode() & 0o777, 0o700);
+    }
+
+    #[test]
+    fn directory_permission_failure_leaves_config_unchanged() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let old = b"previous settings";
+        std::fs::write(&path, old).unwrap();
+        let changed = Settings { language: "ko".into(), ..Settings::default() };
+        let error = changed
+            .save_to_unlocked_with_dir_permissions(&path, |parent| {
+                assert_eq!(parent, dir.path());
+                assert_eq!(std::fs::read(&path).unwrap(), old);
+                Err(ToolError::io(parent.display(), std::io::Error::new(std::io::ErrorKind::PermissionDenied, "injected chmod refusal")))
+            })
+            .unwrap_err();
+        assert!(error.message.contains("injected chmod refusal"));
+        assert_eq!(std::fs::read(&path).unwrap(), old);
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+
+        let new_path = dir.path().join("new-config").join("config.toml");
+        assert!(
+            changed
+                .save_to_unlocked_with_dir_permissions(&new_path, |parent| {
+                    assert!(parent.is_dir());
+                    assert!(!new_path.exists());
+                    Err(ToolError::io(parent.display(), std::io::Error::new(std::io::ErrorKind::PermissionDenied, "injected chmod refusal")))
+                })
+                .is_err()
+        );
+        assert!(!new_path.exists());
     }
 
     #[test]

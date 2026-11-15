@@ -31,6 +31,19 @@ captions 13 px, and code 14 px; both palettes pass the existing WCAG AA contrast
 Layers, locks, tool metadata, schemas, formatting, translation coverage, and secrets passed.
 Final macOS packaging and Windows-native release verification remain pending.
 
+Upstream security backports selected for this release:
+[`98b22ac`](https://github.com/storytold/craft-anything/commit/98b22ac3e2ab2b14543611c57820b1d345bc7877)
+contains agent reads and requires approval for generated-program execution;
+[`bc47887`](https://github.com/storytold/craft-anything/commit/bc47887f4af78ff8e460b8e35d02c97a4be284cb)
+redacts header and environment credential fields;
+[`88facbb`](https://github.com/storytold/craft-anything/commit/88facbb7163632d41c4771067a07b316222d8b04)
+and [`84edfd6`](https://github.com/storytold/craft-anything/commit/84edfd6010ce2c1d480af6c663edb78f0b4d9cbc)
+secure settings directories before private atomic writes. OMCA keeps its transaction and
+explicit project-approval semantics. Original MIT and Apache-2.0 license notices are retained.
+Backport verification passed: 58 engine approval, journal, and settings regressions; two MCP
+approval-response tests; strict all-target Clippy and formatting. Independent source review
+found no actionable P1 or P2 issue in the backports. Windows-native verification remains pending.
+
 
 ### OMCA 0.4.5 release work
 

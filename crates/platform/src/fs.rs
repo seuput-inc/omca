@@ -61,6 +61,19 @@ pub fn write_atomic_private(path: &Path, bytes: &[u8]) -> Result<(), ToolError> 
     write_impl(path, bytes, true)
 }
 
+/// Restrict an existing, dedicated private-data directory to its owner (0700 on Unix).
+/// This changes the selected directory, not its ancestors; it does not create the directory.
+pub fn set_private_dir(dir: &Path) -> Result<(), ToolError> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700)).map_err(|e| ToolError::io(dir.display(), e))?;
+    }
+    #[cfg(not(unix))]
+    let _ = dir;
+    Ok(())
+}
+
 fn write_impl(path: &Path, bytes: &[u8], private: bool) -> Result<(), ToolError> {
     let dir = match path.parent() {
         Some(d) if !d.as_os_str().is_empty() => d.to_path_buf(),

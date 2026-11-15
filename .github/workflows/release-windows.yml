@@ -73,6 +73,13 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Image provider permission or budget regression failed' }
           cargo test --locked -p craft-anything-ai --lib managed_image::tests
           if ($LASTEXITCODE -ne 0) { throw 'Native image decoding regression failed' }
+      - name: Upstream security regressions
+        shell: pwsh
+        run: |
+          cargo test --locked -p craft-anything-engine --lib -- interaction_tools::tests journal::tests settings::tests
+          if ($LASTEXITCODE -ne 0) { throw 'Project containment or private settings regression failed' }
+          cargo test --locked -p craft-anything-mcp --lib -- approval_tool_answers_in_the_permission_prompt_shape a_large_approval_keeps_its_decision
+          if ($LASTEXITCODE -ne 0) { throw 'MCP approval response regression failed' }
       - name: Provider runtime regressions
         shell: pwsh
         working-directory: provider-runtime
