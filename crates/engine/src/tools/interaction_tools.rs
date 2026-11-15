@@ -1035,7 +1035,7 @@ mod tests {
 
     #[test]
     fn dot_dot_after_a_link_is_applied_where_the_system_applies_it() {
-        let (_d, w) = ws();
+        let (dir, w) = ws();
         let outside = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(outside.path().join("t")).unwrap();
         std::fs::create_dir_all(w.app_dir()).unwrap();
@@ -1043,7 +1043,9 @@ mod tests {
             eprintln!("skipped: this system won't make links for tests");
             return;
         }
-        let raw = format!("{}/out/../x.txt", w.app_dir().display());
+        // Verbatim Windows paths reject `..`; exercise the ordinary path the OS normalizes.
+        let app = dir.path().join(w.root.file_name().unwrap()).join("app");
+        let raw = format!("{}/out/../x.txt", app.display());
         let opened = resolve_as_opened(Path::new("/"), &raw).unwrap();
         let write = json!({"file_path": raw});
         // Where the system really puts it is where the checks must look.

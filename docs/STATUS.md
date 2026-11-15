@@ -57,6 +57,12 @@ All 96 unified-workspace smoke scenarios and the complete isolated provider-conn
 passed. Completion summaries remain visible, and cancelling optional fal.ai setup preserves
 the image-generation choice. Inline text actions expose button semantics and keyboard focus;
 their keyboard regression, strict UI Clippy, Korean translation coverage, and formatting passed.
+The complete workspace and mandatory pre-push CI passed on 7ec386dfe8ea, including WebAssembly
+compilation. Its macOS DMG/CLI payload, provider runtime, and signed update package passed.
+Windows run 43711542991 passed the actual portable helper and image boundaries, then exposed
+a regression fixture using a verbatim path with `..`, which Windows refuses to open.
+The fixture now uses the ordinary temporary-directory path and keeps the actual file-write
+and approval assertions. A fresh exact-source Windows run is required before publication.
 
 Upstream security backports selected for this release:
 [`98b22ac`](https://github.com/storytold/craft-anything/commit/98b22ac3e2ab2b14543611c57820b1d345bc7877)
