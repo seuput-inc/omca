@@ -41,6 +41,8 @@ use std::time::{Duration, Instant};
 pub mod activity;
 mod brief;
 mod check;
+#[cfg(test)]
+mod consent_tests;
 pub mod feed;
 mod kept_check;
 pub mod kinds;
