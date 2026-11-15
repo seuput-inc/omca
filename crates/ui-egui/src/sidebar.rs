@@ -7,7 +7,7 @@ use crate::theme::{self, Tokens, size, space};
 use crate::{CraftApp, icons, widgets};
 use egui::{RichText, Sense, Ui, Vec2};
 
-pub const WIDTH: f32 = 248.0;
+pub const WIDTH: f32 = 224.0;
 /// Folded to icons.
 pub const FOLDED: f32 = 56.0;
 /// Below this window width the sidebar folds by itself, leaving the room to the screen.

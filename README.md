@@ -63,6 +63,8 @@ recovery guidance first, with original diagnostics in expandable, copyable detai
 
 Pretendard supplies the interface and Korean text. JetBrains Mono supplies code and logs.
 The unified workspace uses 15 px body text, 13 px captions, and 14 px code text.
+Optional instructions open from help icons; costs, permissions, errors, and folder paths remain
+visible. Compact form spacing and a narrower results panel leave more room for the work.
 
 Choose a common projects folder once, then name each new project. OMCA creates a separate child
 folder without overwriting an existing project. Existing projects can still be opened directly.

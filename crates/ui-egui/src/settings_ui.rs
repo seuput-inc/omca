@@ -135,6 +135,14 @@ fn settings_content(app: &mut CraftApp, ui: &mut Ui, ctx: &egui::Context) {
 /// The control's width is measured each frame and kept for the next, so the words wrap only when
 /// they must; a change lays the frame out again.
 fn row(ui: &mut Ui, title: &str, sub: &str, add: impl FnOnce(&mut Ui)) {
+    row_with_help(ui, title, sub, None, add);
+}
+
+fn help_row(ui: &mut Ui, title: &str, help: &str, add: impl FnOnce(&mut Ui)) {
+    row_with_help(ui, title, "", Some(help), add);
+}
+
+fn row_with_help(ui: &mut Ui, title: &str, sub: &str, help: Option<&str>, add: impl FnOnce(&mut Ui)) {
     let t = Tokens::get(ui.ctx());
     let id = ui.id().with(("setting-control-w", title));
     let control_w = ui.data(|d| d.get_temp::<f32>(id)).unwrap_or(size::TILE_LG * 5.0);
@@ -145,7 +153,12 @@ fn row(ui: &mut Ui, title: &str, sub: &str, add: impl FnOnce(&mut Ui)) {
     ui.horizontal(|ui| {
         ui.allocate_ui_with_layout(Vec2::new(text_w, 0.0), egui::Layout::top_down(egui::Align::Min), |ui| {
             ui.set_width(text_w);
-            ui.label(RichText::new(tr(title)).font(theme::medium(theme::SMALL)));
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(tr(title)).font(theme::medium(theme::SMALL)));
+                if let Some(help) = help {
+                    widgets::help(ui, title, help);
+                }
+            });
             if !sub.is_empty() {
                 ui.add(egui::Label::new(RichText::new(tr(sub)).color(t.text_faint).size(theme::CAPTION)).wrap());
             }
@@ -219,7 +232,7 @@ fn general(app: &mut CraftApp, ui: &mut Ui) {
     ui.add_space(space::M);
     widgets::caption(ui, "Welcome");
     ui.add_space(space::S);
-    row(ui, "Show the welcome again", "Runs the first-run steps next time.", |ui| {
+    help_row(ui, "Show the welcome again", "Runs the first-run steps next time.", |ui| {
         if widgets::secondary(ui, Some("refresh-cw"), "Reset").clicked() {
             app.settings.first_run_done = false;
             app.state.first_run = crate::state::FirstRunStep::Welcome;
@@ -377,16 +390,16 @@ fn number<T: egui::emath::Numeric>(ui: &mut Ui, value: &mut T, range: std::ops::
 fn builds(app: &mut CraftApp, ui: &mut Ui) {
     let mut changed = false;
     let b = &mut app.settings.build;
-    row(ui, "Good enough", "How alike a rebuild must look to the original before refining stops.", |ui| {
+    help_row(ui, "Good enough", "How alike a rebuild must look to the original before refining stops.", |ui| {
         changed |= number(ui, &mut b.good_enough, 50.0..=100.0, "", " %");
     });
-    row(ui, "Refining rounds", "At most this many rounds of fixes after the first build.", |ui| {
+    help_row(ui, "Refining rounds", "At most this many rounds of fixes after the first build.", |ui| {
         changed |= number(ui, &mut b.max_rounds, 0..=20, "", "");
     });
-    row(ui, "Website pages", "Other pages of a website studied and compared besides the one you gave.", |ui| {
+    help_row(ui, "Website pages", "Other pages of a website studied and compared besides the one you gave.", |ui| {
         changed |= number(ui, &mut b.max_pages, 0..=craft_anything_ai::rebuild::kinds::website::MAX_ROUTES, "", "");
     });
-    row(ui, "Match my pictures", "Apps and games: keep refining until they look this alike to your pictures. Off, the likeness is only reported.", |ui| {
+    help_row(ui, "Match my pictures", "Apps and games: keep refining until they look this alike to your pictures. Off, the likeness is only reported.", |ui| {
         let mut on = b.picture_good_enough.is_some();
         if widgets::toggle(ui, &mut on, "Use as a goal").changed() {
             b.picture_good_enough = on.then_some(80.0);
@@ -396,7 +409,7 @@ fn builds(app: &mut CraftApp, ui: &mut Ui) {
             changed |= number(ui, v, 30.0..=100.0, "", " %");
         }
     });
-    row(ui, "Builds at once", "How many projects may build at the same time. More wait their turn.", |ui| {
+    help_row(ui, "Builds at once", "How many projects may build at the same time. More wait their turn.", |ui| {
         changed |= number(ui, &mut b.parallel, 1..=8, "", "");
     });
     ui.add_space(space::SM);
@@ -416,7 +429,7 @@ fn builds(app: &mut CraftApp, ui: &mut Ui) {
         },
     );
     let table = craft_anything_engines::assets::Catalogue::built_in();
-    row(ui, "Picture model", "What pictures and textures are made with.", |ui| {
+    help_row(ui, "Picture model", "What pictures and textures are made with.", |ui| {
         let automatic = a.image_model.as_deref().is_none_or(|id| id.trim().is_empty());
         let current = if automatic {
             tr("Automatic · connected GPT first")

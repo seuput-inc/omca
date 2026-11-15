@@ -28,6 +28,11 @@ regressions, 13 AI bridge tests, two workspace smoke scenarios, and 13 typograph
 and image-setting tests. Korean unified workspace snapshots were rendered at 1440 × 900.
 Pretendard supplies interface text and JetBrains Mono supplies code. Body text is 15 px,
 captions 13 px, and code 14 px; both palettes pass the existing WCAG AA contrast checks.
+Optional instructions use keyboard-accessible help popups. Form padding and navigation widths
+are reduced without shrinking text; project identity and status remain visible above results.
+Help keyboard/pointer interactions, 14 focused UI checks, and two project smoke scenarios passed.
+Korean 1440 × 900 and 760 × 900 renders were inspected: the full new-project form fits, and
+approval controls remain visible at the narrow width.
 Layers, locks, tool metadata, schemas, formatting, translation coverage, and secrets passed.
 Final macOS packaging and Windows-native release verification remain pending.
 

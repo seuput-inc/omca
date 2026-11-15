@@ -41,6 +41,11 @@ fn render(out: &std::path::Path, name: &str, w: f32, h: f32, scale: f32, make: i
         harness.step();
     }
     match name {
+        "unified-help" => {
+            let label = craft_anything_ui_egui::i18n::trf("Help: {topic}", &[("topic", &craft_anything_ui_egui::i18n::tr("What do you want to make?"))]);
+            harness.get_by_label(&label).click();
+            harness.run_steps(3);
+        }
         "composer-picker" | "composer-empty-picker" | "unified-model-picker" => {
             harness.get_by_label_contains(&craft_anything_ui_egui::i18n::tr("Change model")).click();
             harness.run_steps(3);
@@ -94,6 +99,13 @@ fn main() {
 
     if want("unified-home") {
         render(&out, "unified-home", w, h, scale, || {
+            let mut a = demo::app(demo::engine(Mode::Beginner, true));
+            demo::fill_projects(&mut a);
+            a
+        });
+    }
+    if want("unified-help") {
+        render(&out, "unified-help", w, h, scale, || {
             let mut a = demo::app(demo::engine(Mode::Beginner, true));
             demo::fill_projects(&mut a);
             a

@@ -52,6 +52,15 @@ use crate::theme::{self, Tokens, confidence_color, confidence_label, size, space
 use craft_anything_engine::evidence::Confidence;
 use egui::{Color32, Frame, Margin, Response, RichText, Sense, Stroke, Ui, Vec2};
 
+pub fn help(ui: &mut Ui, topic: &str, text: &str) {
+    let label = crate::i18n::trf("Help: {topic}", &[("topic", &tr(topic))]);
+    let button = icons::button(ui, "circle-help", size::CONTROL_SM, false, &label);
+    egui::Popup::from_toggle_button_response(&button).show(|ui| {
+        ui.set_max_width(size::TILE_LG * 10.0);
+        ui.label(egui::RichText::new(tr(text)).size(theme::SMALL));
+    });
+}
+
 /// Lay out `text` in the label style ([`theme::label_text`]) for painting.
 pub fn label_galley(ui: &Ui, text: &str, size: f32, color: Color32) -> std::sync::Arc<egui::Galley> {
     egui::WidgetText::from(theme::label_text(text, size).color(color)).into_galley(
@@ -865,6 +874,28 @@ pub fn open_log_button(ui: &mut Ui, path: &std::path::Path) -> bool {
 mod tests {
     use super::*;
     use std::time::Duration;
+
+    #[test]
+    fn help_is_hidden_until_opened_and_supports_keyboard_and_pointer() {
+        use egui_kittest::kittest::Queryable as _;
+        let topic = "Projects";
+        let detail = "Choose what to recreate, say what you want, then press Start.";
+        let label = crate::i18n::trf("Help: {topic}", &[("topic", &tr(topic))]);
+        let mut h = egui_kittest::Harness::new_ui(|ui| help(ui, topic, detail));
+        h.run_steps(3);
+        assert!(h.query_by_label(&tr(detail)).is_none());
+        h.get_by_label(&label).focus();
+        h.run_steps(2);
+        h.key_press(egui::Key::Space);
+        h.run_steps(3);
+        assert!(h.query_by_label(&tr(detail)).is_some());
+        h.key_press(egui::Key::Escape);
+        h.run_steps(3);
+        assert!(h.query_by_label(&tr(detail)).is_none());
+        h.get_by_label(&label).click();
+        h.run_steps(3);
+        assert!(h.query_by_label(&tr(detail)).is_some());
+    }
 
     /// Every action's icon is bundled: a missing one would quietly draw as a square.
     #[test]

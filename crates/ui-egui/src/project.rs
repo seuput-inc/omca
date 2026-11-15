@@ -916,7 +916,7 @@ fn current_step(app: &CraftApp, ws: &Workspace) -> Option<(Step, bool)> {
 // ---- screen -----------------------------------------------------------------------------------
 
 /// The side panel's width, and the room the screen needs to keep it beside the feed.
-const SIDE_W: f32 = 400.0;
+const SIDE_W: f32 = 320.0;
 const SIDE_BESIDE: f32 = 820.0;
 
 pub fn show(app: &mut CraftApp, ui: &mut Ui) {
@@ -930,16 +930,20 @@ pub fn show(app: &mut CraftApp, ui: &mut Ui) {
     // Keep the result beside the conversation when there is room.
     let beside = ui.available_width() >= SIDE_BESIDE;
     if beside {
-        egui::Panel::right("project-side")
-            .exact_size(SIDE_W)
-            .resizable(false)
-            .frame(widgets::pane(t.canvas, theme::pad_xy(space::L, space::XL)))
-            .show(ui, |ui| egui::ScrollArea::vertical().show(ui, |ui| result_panel(app, ui, &ws)));
+        egui::Panel::right("project-side").exact_size(SIDE_W).resizable(false).frame(widgets::pane(t.canvas, theme::pad_xy(space::M, space::L))).show(
+            ui,
+            |ui| {
+                egui::ScrollArea::vertical().show(ui, |ui| {
+                    project_identity(app, ui, &ws);
+                    result_panel(app, ui, &ws);
+                })
+            },
+        );
     }
     let waiting = app.open_run().filter(|r| r.is_running()).map(RebuildRun::waiting).unwrap_or_default();
     egui::CentralPanel::default().frame(widgets::pane(t.canvas, chat::pane_margin())).show(ui, |ui| {
         let width = ui.available_width();
-        let max_w = width.min(720.0);
+        let max_w = width.min(840.0);
         let pad = ((width - max_w) / 2.0).max(0.0);
         // The feed gets what the prompt box leaves; the box grows with its text, so its height
         // is measured each frame and used on the next.
@@ -954,6 +958,7 @@ pub fn show(app: &mut CraftApp, ui: &mut Ui) {
                     ui.vertical(|ui| {
                         ui.set_width(max_w);
                         if !beside {
+                            project_identity(app, ui, &ws);
                             egui::CollapsingHeader::new(RichText::new(tr("Result and project details")).font(theme::semibold(theme::BODY)))
                                 .id_salt("project-details")
                                 .icon(widgets::disclosure_icon)
@@ -972,6 +977,20 @@ pub fn show(app: &mut CraftApp, ui: &mut Ui) {
         });
         chat::remember_composer_height(ui, comp_id, comp_h, r.response.rect.height());
     });
+}
+
+fn project_identity(app: &CraftApp, ui: &mut Ui, ws: &Workspace) {
+    let t = Tokens::get(ui.ctx());
+    ui.horizontal(|ui| {
+        widgets::icon_tile(ui, make::project_icon(&ws.manifest), size::TILE);
+        ui.vertical(|ui| {
+            ui.add(egui::Label::new(theme::heading(&ws.manifest.name, theme::CARD)).truncate());
+            let (label, fg, bg) = make::status_shown(app, ws, &t);
+            widgets::pill(ui, label, fg, bg);
+        });
+    });
+    widgets::property_text(ui, "Project folder", &ws.root.display().to_string()).on_hover_text(ws.root.display().to_string());
+    ui.add_space(space::SM);
 }
 
 fn result_panel(app: &mut CraftApp, ui: &mut Ui, ws: &Workspace) {
@@ -1029,15 +1048,6 @@ fn side(app: &mut CraftApp, ui: &mut Ui, ws: &Workspace) {
     let m = &ws.manifest;
     widgets::panel(&t).inner_margin(theme::pad(space::M)).show(ui, |ui| {
         ui.set_width(ui.available_width());
-        ui.horizontal(|ui| {
-            widgets::icon_tile(ui, make::project_icon(m), size::TILE);
-            ui.vertical(|ui| {
-                ui.add(egui::Label::new(theme::heading(&m.name, theme::CARD)).truncate());
-                let (label, fg, bg) = make::status_shown(app, ws, &t);
-                widgets::pill(ui, label, fg, bg);
-            });
-        });
-        ui.add_space(space::SM);
         if !matches!(m.target, TargetRef::None) {
             widgets::property_text(ui, "From", &m.target.label()).on_hover_text(m.target.label());
         }

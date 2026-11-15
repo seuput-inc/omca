@@ -111,7 +111,8 @@ Owner: maintainers · Status: in progress
 - [x] Remove provider/account labels from the chat model selector and filter unavailable connections.
 - [x] Add app-owned OpenAI Images and Codex image-tool routes without exporting credentials.
 - [x] Preserve project permission, explicit unknown-cost approval, cancellation, and original image formats.
-- [ ] Verify native image routing, PNG conversion, optional fal.ai, and rendered model selection.
+- [x] Verify native image routing, PNG conversion, optional fal.ai, and rendered model selection.
+- [x] Unify navigation, improve readable typography and density, and fold optional instructions into accessible help.
 - [ ] Publish 0.4.6 and verify the installed update.
 
 

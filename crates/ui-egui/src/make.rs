@@ -95,7 +95,7 @@ pub fn hero(app: &mut CraftApp, ui: &mut Ui, w: f32) {
             (d.folder, d.folder_files, d.existing) = (None, None, None);
         }
     }
-    ui.add_space(space::L);
+    ui.add_space(space::M);
     if app.state.make.look {
         look(app, ui, w);
         return;
@@ -104,22 +104,23 @@ pub fn hero(app: &mut CraftApp, ui: &mut Ui, w: f32) {
         mine(app, ui, w);
         return;
     }
-    ui.label(theme::heading(tr("What do you want to make?"), theme::TITLE));
-    ui.add_space(space::XS);
-    ui.label(RichText::new(tr("Choose what to recreate, say what you want, then press Start.")).size(theme::BODY).color(t.text_dim));
-    ui.add_space(space::M);
-    widgets::card(&t).inner_margin(theme::pad(space::L)).show(ui, |ui| {
-        ui.set_width(w - 2.0 * space::L - 10.0);
+    ui.horizontal(|ui| {
+        ui.label(theme::heading(tr("What do you want to make?"), theme::TITLE));
+        widgets::help(ui, "What do you want to make?", "Choose what to recreate, say what you want, then press Start.");
+    });
+    ui.add_space(space::SM);
+    widgets::card(&t).inner_margin(theme::pad(space::M)).show(ui, |ui| {
+        ui.set_width(w - 2.0 * space::M - 10.0);
         step_title(ui, 1, "What do you want to recreate?");
         ui.add_space(space::SM);
         choose_target(app, ui);
         // How closely the original may be looked at, once there is one.
         let d = &app.state.make;
         if matches!(d.target, TargetRef::Local { .. }) || d.editing_url || !d.url.is_empty() {
-            ui.add_space(space::M);
+            ui.add_space(space::SM);
             look_inside(app, ui);
         }
-        ui.add_space(space::L);
+        ui.add_space(space::M);
         step_title(ui, 2, "Say what you want");
         ui.add_space(space::SM);
         // The example matches the tile picked above (a "recreate this website" hint under
@@ -136,11 +137,11 @@ pub fn hero(app: &mut CraftApp, ui: &mut Ui, w: f32) {
         let website = matches!(resolve_target(d), TargetRef::Website { .. }) || d.editing_url;
         let submit = request_box(app, ui, hint, (!website).then_some("Add pictures of the original (optional: screenshots help it look right)"));
         if app.state.make.request.trim().is_empty() {
-            ui.add_space(space::M);
+            ui.add_space(space::SM);
             suggestions(app, ui);
         }
         engine_choices(app, ui);
-        ui.add_space(space::L);
+        ui.add_space(space::M);
         ui.horizontal(|ui| {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let ready = !app.state.make.request.trim().is_empty()
@@ -156,7 +157,7 @@ pub fn hero(app: &mut CraftApp, ui: &mut Ui, w: f32) {
             });
         });
         // Where it's saved: secondary to Start, so under it.
-        ui.add_space(space::M);
+        ui.add_space(space::SM);
         crate::folders::make_line(app, ui);
     });
 }
@@ -165,14 +166,15 @@ pub fn hero(app: &mut CraftApp, ui: &mut Ui, w: f32) {
 /// edits in place, and what to change. There's no original to pick, so no Clean room / Deep choice.
 fn mine(app: &mut CraftApp, ui: &mut Ui, w: f32) {
     let t = Tokens::get(ui.ctx());
-    ui.label(theme::heading(tr("Work on a project you already have"), theme::TITLE));
-    ui.add_space(space::S);
-    ui.label(RichText::new(tr("Pick its folder, say what you want, then press Start.")).size(theme::BODY).color(t.text_dim));
-    ui.add_space(space::L);
-    widgets::card(&t).inner_margin(theme::pad_xy(space::XL, space::L)).show(ui, |ui| {
-        ui.set_width(w - 2.0 * space::XL - 10.0);
+    ui.horizontal(|ui| {
+        ui.label(theme::heading(tr("Work on a project you already have"), theme::TITLE));
+        widgets::help(ui, "Work on a project you already have", "Pick its folder, say what you want, then press Start.");
+    });
+    ui.add_space(space::SM);
+    widgets::card(&t).inner_margin(theme::pad(space::M)).show(ui, |ui| {
+        ui.set_width(w - 2.0 * space::M - 10.0);
         step_title(ui, 1, "Where is your project?");
-        ui.add_space(space::M);
+        ui.add_space(space::SM);
         // A folder picked on Make for another use isn't this project's.
         let d = &app.state.make;
         let folder = d.folder.clone().filter(|_| d.existing == Some(ExistingFiles::Edit));
@@ -199,12 +201,12 @@ fn mine(app: &mut CraftApp, ui: &mut Ui, w: f32) {
                 });
             }
         }
-        ui.add_space(space::XL);
-        step_title(ui, 2, "Say what you want");
         ui.add_space(space::M);
+        step_title(ui, 2, "Say what you want");
+        ui.add_space(space::SM);
         let submit = request_box(app, ui, "For example: add a dark mode", Some("Attach pictures (or drop or paste them here)"));
         engine_choices(app, ui);
-        ui.add_space(space::L);
+        ui.add_space(space::M);
         ui.horizontal(|ui| {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let said = !app.state.make.request.trim().is_empty();
@@ -237,7 +239,7 @@ fn request_box(app: &mut CraftApp, ui: &mut Ui, hint: &str, attach: Option<&str>
         crate::prompt_box::PromptBox {
             name: "Say what you want",
             hint: tr(hint),
-            rows: (3, 10),
+            rows: (2, 10),
             attach,
             previews: &previews,
             stop_button: None,
@@ -404,7 +406,10 @@ fn choose_target(app: &mut CraftApp, ui: &mut Ui) {
 fn look_inside(app: &mut CraftApp, ui: &mut Ui) {
     let t = Tokens::get(ui.ctx());
     // The app's one setting (the title bar's switch), not this project's: said where it's chosen.
-    ui.label(RichText::new(tr("How closely may OMCA look at it?")).size(theme::SMALL).color(t.text_dim));
+    ui.horizontal(|ui| {
+        ui.label(RichText::new(tr("How closely may OMCA look at it?")).size(theme::SMALL).color(t.text_dim));
+        widgets::help(ui, "How closely may OMCA look at it?", "For everything you make, like the switch in the title bar.");
+    });
     ui.add_space(space::XS);
     let deep = app.settings.deep_mode;
     let choices = [
@@ -422,14 +427,7 @@ fn look_inside(app: &mut CraftApp, ui: &mut Ui) {
     });
     // What the chosen one means, under it; the other's on hover.
     let chosen = choices.iter().find(|c| c.0 == deep).map_or("", |c| c.3);
-    ui.add(
-        egui::Label::new(
-            RichText::new(format!("{} {}", tr(chosen), tr("For everything you make, like the switch in the title bar.")))
-                .size(theme::SMALL)
-                .color(t.text_faint),
-        )
-        .wrap(),
-    );
+    ui.add(egui::Label::new(RichText::new(tr(chosen)).size(theme::SMALL).color(t.text_faint)).wrap());
     if let Some(on) = pick {
         app.set_deep(on);
     }
