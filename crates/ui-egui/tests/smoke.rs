@@ -2291,7 +2291,7 @@ fn a_new_project_can_start_in_a_folder_that_already_has_the_persons_files() {
     let ws = Workspace::open(mine.path()).expect("the project is in the picked folder");
     assert!(ws.manifest.app_in_root && ws.app_dir() == mine_path);
     assert_eq!(std::fs::read_to_string(mine.path().join("index.html")).unwrap(), "<p>hi</p>");
-    assert_eq!(runs.started(), [mine_path.clone()]);
+    assert_eq!(runs.started(), std::slice::from_ref(&mine_path));
     assert!(h.state().settings.project_folders.contains(&mine_path), "it stays in the list");
     assert!(wait(&mut h, |app| app.projects.iter().any(|w| w.root == mine_path)), "and is listed");
     assert_eq!(std::fs::read_dir(d.path()).map(|r| r.count()).unwrap_or(0), 0, "nothing in the projects folder");
@@ -2363,7 +2363,7 @@ fn the_front_door_works_on_a_project_the_person_already_has() {
     assert_eq!(ws.manifest.target, TargetRef::None, "an address in the request isn't an original");
     assert_eq!(ws.manifest.name, mine.path().file_name().unwrap().to_string_lossy(), "named after its folder");
     assert_eq!(std::fs::read_to_string(mine.path().join("index.html")).unwrap(), "<p>hi</p>");
-    assert_eq!(runs.started(), [mine_path.clone()]);
+    assert_eq!(runs.started(), std::slice::from_ref(&mine_path));
     assert_eq!(std::fs::read_dir(d.path()).map(|r| r.count()).unwrap_or(0), 0, "nothing in the projects folder");
 
     // Back on the door, the same folder is a project now, so it opens.
